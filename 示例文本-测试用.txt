@@ -1,0 +1,49 @@
+========================================
+  英语听写练习 - 示例文本
+========================================
+
+以下是不同难度的示例文本，可复制粘贴到系统中练习。
+
+【难度1：初级 - 日常对话】
+----------------------------------------
+Hi, my name is Sarah. I am a student at New York University. I study English literature. Every morning, I wake up at seven o'clock. I have breakfast with my roommate. We usually eat bread and drink coffee. After breakfast, I go to the library to study. I love reading books. In the evening, I meet my friends. We talk about our day and have dinner together. I go to bed at ten o'clock. I enjoy my life here very much.
+
+【难度2：中级 - 科技新闻】
+----------------------------------------
+Artificial intelligence is transforming the way we live and work. Machine learning algorithms can now recognize faces, translate languages, and even drive cars. However, experts warn that we need to develop AI responsibly. Privacy concerns and job displacement are major challenges that society must address. Many tech companies are investing billions of dollars in AI research. The goal is to create systems that can think and learn like humans. But some scientists believe we are still decades away from achieving true artificial general intelligence.
+
+【难度3：高级 - 学术演讲】
+----------------------------------------
+Ladies and gentlemen, thank you for joining us today. I'd like to discuss the profound implications of climate change on global biodiversity. Recent studies indicate that rising temperatures are causing unprecedented shifts in ecosystems worldwide. Species that have thrived for millennia are now facing extinction at an alarming rate. Furthermore, the interdependence of these species means that the loss of one can trigger a cascade effect, disrupting entire food chains. It is imperative that we take immediate action to mitigate these effects through sustainable practices and international cooperation. The time for debate has passed; we must act now to preserve our planet for future generations.
+
+【难度4：TED演讲风格】
+----------------------------------------
+When I was eight years old, I discovered something that changed my life forever. I found that I could solve complex mathematical problems not by following rules, but by seeing patterns. This ability to recognize patterns isn't just about numbers. It's about understanding the fundamental structures that govern our universe. Throughout history, great innovators have been pattern recognizers. They saw connections where others saw chaos. They found order in complexity. And today, in our data-driven world, this skill is more valuable than ever. Because in the end, innovation isn't about having all the answers. It's about asking the right questions and having the courage to follow where they lead.
+
+【难度5：经典文学片段】
+----------------------------------------
+It was the best of times, it was the worst of times. It was the age of wisdom, it was the age of foolishness. It was the epoch of belief, it was the epoch of incredulity. It was the season of Light, it was the season of Darkness. It was the spring of hope, it was the winter of despair. We had everything before us, we had nothing before us. We were all going direct to Heaven, we were all going direct the other way.
+
+【难度6：商务英语】
+----------------------------------------
+Dear colleagues, I am writing to inform you about the upcoming changes to our company's remote work policy. Effective from next month, employees will be required to work from the office at least three days per week. This decision was made after careful consideration of productivity metrics and employee feedback. We understand that this change may require adjustments to your current routine. However, we believe that increased face-to-face collaboration will enhance team cohesion and innovation. If you have any concerns or special circumstances that require accommodation, please contact the Human Resources department. We appreciate your understanding and cooperation during this transition period.
+
+【使用建议】
+----------------------------------------
+1. 初学者：从难度1-2开始，语速设为0.5-0.75x
+2.中级学习者：挑战难度3-4，语速1x
+3.高级学习者：尝试难度5-6，语速1.5x以上
+4. 可以先阅读一遍，理解大意后再开始听写
+5. 重点关注系统的错误分析和学习建议
+6. 对于错误较多的句子，可以反复练习
+
+【练习技巧】
+----------------------------------------
+✓ 每天坚持15-30分钟
+✓ 从简单到困难逐步提升
+✓ 重点攻克薄弱环节
+✓ 记录常见错误词汇
+✓ 定期复习之前的错题
+
+========================================
+
