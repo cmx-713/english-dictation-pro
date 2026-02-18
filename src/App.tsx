@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { SetupScreen } from './components/SetupScreen';
 import { PracticeScreen, SentenceResult } from './components/PracticeScreen';
@@ -12,8 +12,37 @@ import { registerStudent } from './utils/studentManager';
 
 type AppMode = 'setup' | 'practice' | 'results' | 'history' | 'review' | 'teacher' | 'library';
 
+// URL path <-> AppMode mapping
+const pathToMode: Record<string, AppMode> = {
+  '/': 'setup',
+  '/library': 'library',
+  '/practice': 'practice',
+  '/results': 'results',
+  '/history': 'history',
+  '/review': 'review',
+  '/teacher': 'teacher',
+};
+
+const modeToPath: Record<AppMode, string> = {
+  setup: '/',
+  library: '/library',
+  practice: '/practice',
+  results: '/results',
+  history: '/history',
+  review: '/review',
+  teacher: '/teacher',
+};
+
+function getModeFromPath(): AppMode {
+  const path = window.location.pathname;
+  // Check for ?mode=teacher legacy support
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('mode') === 'teacher') return 'teacher';
+  return pathToMode[path] || 'setup';
+}
+
 function App() {
-  const [mode, setMode] = useState<AppMode>('setup');
+  const [mode, setMode] = useState<AppMode>(() => getModeFromPath());
   const [rawText, setRawText] = useState('');
   const [results, setResults] = useState<SentenceResult[]>([]);
   const [studentMetadata, setStudentMetadata] = useState<{
@@ -23,13 +52,34 @@ function App() {
     inputMethod: 'text' | 'voice' | 'image';
   } | null>(null);
 
-  // Check for teacher mode in URL
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('mode') === 'teacher') {
-      setMode('teacher');
+  // Navigate to a new mode, pushing a history entry
+  const navigateTo = useCallback((newMode: AppMode) => {
+    const targetPath = modeToPath[newMode];
+    // Only push if path actually changes
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({ mode: newMode }, '', targetPath);
     }
+    setMode(newMode);
   }, []);
+
+  // Handle browser back/forward buttons
+  useEffect(() => {
+    const handlePopState = (event: PopStateEvent) => {
+      if (event.state && event.state.mode) {
+        setMode(event.state.mode as AppMode);
+      } else {
+        // Fallback: parse from URL
+        setMode(getModeFromPath());
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    // Set initial state so that first back press works correctly
+    window.history.replaceState({ mode }, '', modeToPath[mode]);
+
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleStart = (
     text: string,
@@ -38,14 +88,13 @@ function App() {
     setRawText(text);
     if (metadata) {
       setStudentMetadata(metadata);
-      // Register student immediately
       registerStudent({
         studentName: metadata.studentName,
         studentNumber: metadata.studentNumber,
         className: metadata.className
       });
     }
-    setMode('practice');
+    navigateTo('practice');
   };
 
   const handleFinish = (res: SentenceResult[]) => {
@@ -53,23 +102,23 @@ function App() {
     if (rawText && res.length > 0) {
       saveRecord(rawText, res, studentMetadata || undefined);
     }
-    setMode('results');
+    navigateTo('results');
   };
 
   const handleViewHistory = () => {
-    setMode('history');
+    navigateTo('history');
   };
 
   const handleViewRecord = (text: string, recordResults: SentenceResult[]) => {
     setRawText(text);
     setResults(recordResults);
-    setMode('review');
+    navigateTo('review');
   };
 
   const handleRestart = () => {
-    setMode('setup');
     setRawText('');
     setResults([]);
+    navigateTo('setup');
   };
 
   return (
@@ -81,26 +130,17 @@ function App() {
           {mode === 'setup' && (
             <SetupScreen
               onStart={handleStart}
-              onOpenLibrary={() => setMode('library')}
+              onOpenLibrary={() => navigateTo('library')}
               initialText={rawText}
             />
           )}
 
           {mode === 'library' && (
             <LibraryScreen
-              onBack={() => setMode('setup')}
+              onBack={() => navigateTo('setup')}
               onSelect={(material: DictationMaterial) => {
-                // Convert material to text and start
-                // We need to ensure student info is captured. 
-                // If coming from library, maybe we prompt for student info if missing?
-                // Or we assume SetupScreen collected it? 
-                // Actually Library is accessed FROM SetupScreen, so we might lose state if we unmount SetupScreen.
-                // But student info is in localStorage in StudentInfo component.
-                // App.tsx doesn't know student info yet until onStart is called.
-                // So we need to handle this.
                 setRawText(material.content);
-                setMode('setup'); // Go back to setup to confirm/enter student info with pre-filled text?
-                // Better: go back to setup, pre-fill text, and let user click Start.
+                navigateTo('setup');
               }}
             />
           )}
@@ -109,7 +149,6 @@ function App() {
             <PracticeScreen
               rawText={rawText}
               onFinish={handleFinish}
-              // 修改点：传入 onBack 回调，点击后回到初始设置页
               onBack={handleRestart}
             />
           )}
@@ -124,7 +163,7 @@ function App() {
           {mode === 'review' && (
             <ReviewScreen
               results={results}
-              onBack={handleViewHistory}
+              onBack={() => navigateTo('history')}
             />
           )}
 
