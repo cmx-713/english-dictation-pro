@@ -16,9 +16,22 @@ interface AIAssistantProps {
   context?: string;
   initialInput?: string;
   systemPrompt?: string;
+  panelWidth?: number;
+  onPanelWidthChange?: (width: number) => void;
 }
 
-export const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, context, initialInput, systemPrompt }) => {
+export const AIAssistant: React.FC<AIAssistantProps> = ({
+  isOpen,
+  onClose,
+  context,
+  initialInput,
+  systemPrompt,
+  panelWidth = 384,
+  onPanelWidthChange
+}) => {
+  const MIN_PANEL_WIDTH = 360;
+  const MAX_PANEL_WIDTH = 760;
+  const isResizingRef = useRef(false);
   // 聊天记录
   const [messages, setMessages] = useState<Message[]>([
     { role: 'assistant', content: '你好！我是你的专属 AI 助教。请先配置 API Key 才能开始对话哦。' }
@@ -59,6 +72,38 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, conte
       setInput(initialInput);
     }
   }, [initialInput, isOpen]);
+
+  // 拖拽左边界调整侧栏宽度
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!isResizingRef.current || !onPanelWidthChange) return;
+      const nextWidth = Math.min(
+        MAX_PANEL_WIDTH,
+        Math.max(MIN_PANEL_WIDTH, window.innerWidth - event.clientX)
+      );
+      onPanelWidthChange(nextWidth);
+    };
+
+    const handleMouseUp = () => {
+      isResizingRef.current = false;
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [onPanelWidthChange]);
+
+  const handleResizeStart = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    isResizingRef.current = true;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  };
 
   // --- 保存配置 ---
   const handleSaveSettings = () => {
@@ -216,7 +261,26 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, conte
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-y-0 right-0 w-96 bg-white shadow-2xl z-50 flex flex-col border-l border-slate-200 animation-slide-in-right">
+    <>
+      {/* 点击主内容区域可收起侧边栏，避免长时间遮挡 */}
+      <button
+        type="button"
+        className="fixed inset-0 z-[45] cursor-default border-0 bg-slate-900/25 p-0 animate-in fade-in duration-200"
+        onClick={onClose}
+        aria-label="关闭 AI 助教"
+      />
+      <div
+        className="fixed inset-y-0 right-0 z-50 flex flex-col border-l border-slate-200 bg-white shadow-2xl animation-slide-in-right"
+        style={{ width: panelWidth }}
+      >
+      {/* 左侧拖拽手柄：支持向左拖动放大/缩小 */}
+      <div
+        onMouseDown={handleResizeStart}
+        className="absolute left-0 top-0 h-full w-1 -translate-x-1/2 cursor-col-resize bg-transparent group"
+        title="拖动调整宽度"
+      >
+        <div className="h-full w-full rounded-full bg-slate-300/0 transition-colors group-hover:bg-slate-300" />
+      </div>
 
       {/* Header */}
       <div className="p-4 bg-white border-b border-slate-100 flex justify-between items-center">
@@ -352,5 +416,6 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, conte
         </div>
       )}
     </div>
+    </>
   );
 };

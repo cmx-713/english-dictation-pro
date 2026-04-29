@@ -13,7 +13,7 @@ import {
 import { SentenceResult } from './PracticeScreen';
 import { AIAssistant } from './AIAssistant';
 import { OVERALL_ANALYSIS_SYSTEM_PROMPT } from '../utils/aiPrompts';
-import { Bot, AlertTriangle, ArrowUp, ArrowRight, ArrowDown, CheckCircle2 } from 'lucide-react';
+import { Bot, AlertTriangle, ArrowUp, ArrowRight, ArrowDown, CheckCircle2, MessageSquare, ChevronRight } from 'lucide-react';
 import { analyzeErrors, ErrorStats } from '../utils/errorAnalysis';
 
 interface ResultsScreenProps {
@@ -26,6 +26,7 @@ type TabType = 'overview' | 'details' | 'insights';
 
 export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart }) => {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
+  const [aiPanelWidth, setAiPanelWidth] = useState(384);
 
   // 计算统计数据
   const totalSentences = results.length;
@@ -50,8 +51,7 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
   const [aiContext, setAiContext] = useState('');
   const [aiInitialInput, setAiInitialInput] = useState('');
 
-  const handleAnalyzeOverall = () => {
-    // 构造发送给 AI 的数据摘要
+  const buildAiContextSummary = () => {
     let summary = "【本次练习成绩单】\n";
     summary += `总句数：${totalSentences}，平均正确率：${avgAccuracy}%，完美句数：${perfectSentences}\n\n`;
     summary += "【详细错题记录】\n";
@@ -65,14 +65,30 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
     if (perfectSentences === totalSentences) {
       summary += "（本次练习全部正确，太棒了！）";
     }
+    return summary;
+  };
 
-    setAiContext(summary);
+  const handleAnalyzeOverall = () => {
+    setAiContext(buildAiContextSummary());
     setAiInitialInput("请根据上述练习记录，生成整体错误分析报告");
     setIsAiOpen(true);
   };
 
+  /** 浮动按钮：打开时带上本次练习上下文；再次点击或点遮罩即收起 */
+  const toggleAiAssistant = () => {
+    if (isAiOpen) {
+      setIsAiOpen(false);
+      return;
+    }
+    if (!aiContext.trim()) {
+      setAiContext(buildAiContextSummary());
+      setAiInitialInput('');
+    }
+    setIsAiOpen(true);
+  };
+
   return (
-    <div className="max-w-5xl mx-auto pb-20 px-4">
+    <div className="relative max-w-5xl mx-auto pb-20 px-4 transition-all duration-300 ease-in-out">
       {/* 头部标题 */}
       <div className="text-center mb-10 pt-8">
         <div className="w-20 h-20 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4 animate-bounce shadow-sm">
@@ -383,12 +399,29 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
         </button>
       </div>
 
+      {/* 与练习页一致：右下角开关，避免 AI 侧栏一直挡内容 */}
+      <button
+        type="button"
+        onClick={toggleAiAssistant}
+        className={`fixed bottom-8 z-[60] flex h-14 w-14 items-center justify-center rounded-full border-4 border-white/20 shadow-2xl transition-all duration-300 group ${
+          isAiOpen
+            ? 'bg-slate-200 text-slate-500 hover:bg-slate-300'
+            : 'right-8 bg-blue-600 text-white shadow-xl hover:bg-blue-700'
+        }`}
+        style={{ right: isAiOpen ? aiPanelWidth : 32 }}
+        title={isAiOpen ? '收起 AI 助教' : '打开 AI 助教'}
+      >
+        {isAiOpen ? <ChevronRight size={28} /> : <MessageSquare size={26} className="relative z-10" />}
+      </button>
+
       <AIAssistant
         isOpen={isAiOpen}
         onClose={() => setIsAiOpen(false)}
         context={aiContext}
         initialInput={aiInitialInput}
         systemPrompt={OVERALL_ANALYSIS_SYSTEM_PROMPT}
+        panelWidth={aiPanelWidth}
+        onPanelWidthChange={setAiPanelWidth}
       />
     </div>
   );

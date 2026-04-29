@@ -28,6 +28,7 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
   const [showOriginalText, setShowOriginalText] = useState(false);
   const [speechRate, setSpeechRate] = useState(1.0);
   const [isAiOpen, setIsAiOpen] = useState(false);
+  const [aiPanelWidth, setAiPanelWidth] = useState(384);
 
 
   const { voices, selectedVoice, setSelectedVoice, speak, cancel, isPlaying, isSupported, error } = useSpeech();
@@ -85,8 +86,8 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
 
   return (
     <div className="relative min-h-screen overflow-x-hidden">
-      {/* 主内容区域：根据 AI 助手状态自动调整右边距 */}
-      <div className={`max-w-4xl mx-auto pb-20 px-4 transition-all duration-300 ease-in-out ${isAiOpen ? 'mr-[400px]' : 'mx-auto'}`}>
+      {/* 主内容区域：保持固定布局，AI 侧栏覆盖显示，不挤压内容 */}
+      <div className="max-w-4xl mx-auto pb-20 px-4 transition-all duration-300 ease-in-out">
 
         {/* 顶部返回按钮 */}
         <div className="pt-6 mb-2">
@@ -250,9 +251,10 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
       <button
         onClick={() => setIsAiOpen(!isAiOpen)}
         className={`fixed bottom-8 w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 z-[60] group border-4 border-white/20 ${isAiOpen
-          ? 'right-[400px] bg-slate-200 text-slate-500 hover:bg-slate-300' // 打开状态：灰色收起按钮
-          : 'right-8 bg-blue-600 text-white hover:bg-blue-700 shadow-xl' // 关闭状态：学术蓝打开按钮
+          ? 'bg-slate-200 text-slate-500 hover:bg-slate-300'
+          : 'bg-blue-600 text-white hover:bg-blue-700 shadow-xl'
           }`}
+        style={{ right: isAiOpen ? aiPanelWidth : 32 }}
         title={isAiOpen ? "收起 AI 助教" : "打开 AI 助教"}
       >
         {isAiOpen ? (
@@ -270,6 +272,8 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
         isOpen={isAiOpen}
         onClose={() => setIsAiOpen(false)}
         context={rawText}
+        panelWidth={aiPanelWidth}
+        onPanelWidthChange={setAiPanelWidth}
 
       />
     </div>
