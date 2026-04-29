@@ -19,7 +19,7 @@ import {
   ClipboardList,
   CheckCircle2,
   Trash2,
-  RefreshCw
+  RefreshCw,
 } from 'lucide-react';
 import {
   LineChart,
@@ -141,6 +141,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   // 作业看板：批量加载所有作业的提交汇总
   const [allSubmissionsLoaded, setAllSubmissionsLoaded] = useState(false);
   const [allSubmissionsLoading, setAllSubmissionsLoading] = useState(false);
+
   
   // 编辑学生信息的状态
   const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
@@ -512,6 +513,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     void loadActiveAssignments();
   };
 
+  // 永久删除作业（及关联提交记录）
+  const deleteAssignment = async (id: string) => {
+    if (!confirm('确认永久删除该作业？相关提交记录也将一并删除，不可恢复。')) return;
+    await supabase.from('class_assignments').delete().eq('id', id);
+    setAssignmentHistory(prev => prev.filter(a => a.id !== id));
+    setActiveAssignments(prev => prev.filter(a => a.id !== id));
+    setAssignmentSubmissions(prev => { const n = { ...prev }; delete n[id]; return n; });
+  };
+
   // 加载各班错因分布（聚合 error_summary by_subtype）
   const loadClassErrorProfiles = async () => {
     setClassErrorLoading(true);
@@ -552,6 +562,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     }
   };
 
+
+  // 生成某班建议（并尝试保存到 DB）
   // 展开/收起学生详情
   const toggleStudent = async (studentName: string) => {
     if (expandedStudent === studentName) {
@@ -841,7 +853,166 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                 </ResponsiveContainer>
               </div>
             </div>
+
+            {/* ===== 班级学情监控 ===== */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <BarChart3 className="w-5 h-5 text-blue-500" />
+                  班级学情监控
+                </h3>
+                <button
+                  onClick={() => { void loadClassErrorProfiles(); void fetchData(); }}
+                  className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg text-slate-500 hover:bg-slate-50 flex items-center gap-1"
+                >
+                  <RefreshCw className="w-3 h-3" /> 刷新
+                </button>
+              </div>
+
+            {classes.length === 0 ? (
+              <p className="text-sm text-slate-400">暂无班级数据</p>
+            ) : (() => {
+              const today = new Date();
+              const sevenDaysAgo = new Date(today.getTime() - 7 * 24 * 3600 * 1000).toISOString().split('T')[0];
+              const ERROR_LABELS_SHORT: Record<string, string> = { A: '语音', B: '拼写', C: '语法', D: '理解' };
+              const ERROR_COLORS: Record<string, string> = { A: 'bg-red-400', B: 'bg-amber-400', C: 'bg-blue-400', D: 'bg-purple-400' };
+
+              return (
+                <div className="space-y-4">
+                  {classes.map(cls => {
+                    const clsStudents = students.filter(s => s.class_name === cls.class_name);
+                    const profile = classErrorProfiles[cls.class_name];
+                    const clsAvg = cls.avg_accuracy != null ? Math.round(Number(cls.avg_accuracy)) : null;
+
+                    // 需关注学生：正确率 < 65% 或 7 天未练习
+                    const atRiskLowAcc = clsStudents
+                      .filter(s => s.avg_accuracy < 65)
+                      .sort((a, b) => a.avg_accuracy - b.avg_accuracy)
+                      .slice(0, 5);
+                    const atRiskInactive = clsStudents
+                      .filter(s => s.last_practice_date < sevenDaysAgo)
+                      .sort((a, b) => a.last_practice_date.localeCompare(b.last_practice_date))
+                      .slice(0, 5);
+
+
+                    // 错因排序
+                    const errorEntries = profile && profile.total > 0
+                      ? (['A', 'B', 'C', 'D'] as const)
+                          .map(k => ({ key: k, count: profile[k], pct: Math.round((profile[k] / profile.total) * 100) }))
+                          .sort((a, b) => b.count - a.count)
+                      : [];
+                    const topError = errorEntries[0];
+
+                    return (
+                      <div key={cls.class_name} className="border border-slate-200 rounded-xl overflow-hidden">
+                        {/* 班级标题行 */}
+                        <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-100">
+                          <div className="flex items-center gap-3">
+                            <span className="text-sm font-bold text-slate-800">{cls.class_name}</span>
+                            <span className="text-xs text-slate-500">{cls.student_count} 人</span>
+                          </div>
+                          {/* 整体正确率 */}
+                          {clsAvg != null && (
+                            <span className={`text-sm font-bold px-3 py-1 rounded-full ${
+                              clsAvg >= 85 ? 'bg-emerald-100 text-emerald-700'
+                              : clsAvg >= 70 ? 'bg-amber-100 text-amber-700'
+                              : 'bg-red-100 text-red-600'
+                            }`}>
+                              均 {clsAvg}%
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="px-4 py-3 grid grid-cols-1 md:grid-cols-3 gap-4">
+
+                          {/* ① 错因分布 */}
+                          <div>
+                            <p className="text-xs font-semibold text-slate-600 mb-2">错因分布</p>
+                            {!profile || profile.total === 0 ? (
+                              <p className="text-xs text-slate-400">暂无错因数据</p>
+                            ) : (
+                              <div className="space-y-1.5">
+                                {errorEntries.map(({ key, count, pct }) => (
+                                  <div key={key} className="flex items-center gap-2">
+                                    <span className="w-8 text-xs text-slate-500 shrink-0">{ERROR_LABELS_SHORT[key]}</span>
+                                    <div className="flex-1 h-3 bg-slate-100 rounded-full overflow-hidden">
+                                      <div className={`h-full rounded-full ${ERROR_COLORS[key]}`} style={{ width: `${pct}%` }} />
+                                    </div>
+                                    <span className="text-xs font-medium text-slate-600 w-12 text-right">{pct}% ({count})</span>
+                                  </div>
+                                ))}
+                                {topError && (
+                                  <p className="text-xs text-amber-600 mt-1 font-medium">
+                                    ⚠ 主要弱项：{ERROR_LABELS_SHORT[topError.key]}类（{topError.pct}%）
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* ② 需关注学生 */}
+                          <div>
+                            <p className="text-xs font-semibold text-slate-600 mb-2">
+                              需关注学生
+                              {(atRiskLowAcc.length + atRiskInactive.length) > 0 && (
+                                <span className="ml-1.5 px-1.5 py-0.5 bg-red-100 text-red-600 rounded-full text-[10px] font-bold">
+                                  {new Set([...atRiskLowAcc, ...atRiskInactive].map(s => s.student_name)).size}
+                                </span>
+                              )}
+                            </p>
+                            {atRiskLowAcc.length === 0 && atRiskInactive.length === 0 ? (
+                              <p className="text-xs text-emerald-600">✓ 全班学情良好</p>
+                            ) : (
+                              <div className="space-y-1">
+                                {atRiskLowAcc.map(s => (
+                                  <div key={`acc-${s.student_name}`} className="flex items-center justify-between text-xs bg-red-50 border border-red-100 rounded px-2 py-1">
+                                    <span className="font-medium text-slate-800">{s.student_name}</span>
+                                    <span className="text-red-600 font-bold">{Math.round(s.avg_accuracy)}% ↓低</span>
+                                  </div>
+                                ))}
+                                {atRiskInactive
+                                  .filter(s => !atRiskLowAcc.find(a => a.student_name === s.student_name))
+                                  .map(s => {
+                                    const daysAgo = Math.floor((today.getTime() - new Date(s.last_practice_date).getTime()) / 86400000);
+                                    return (
+                                      <div key={`inactive-${s.student_name}`} className="flex items-center justify-between text-xs bg-amber-50 border border-amber-100 rounded px-2 py-1">
+                                        <span className="font-medium text-slate-800">{s.student_name}</span>
+                                        <span className="text-amber-600">{daysAgo}天未练</span>
+                                      </div>
+                                    );
+                                  })}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* ③ 本班作业 & 练习量 */}
+                          <div className="space-y-3">
+                            {/* 练习量 */}
+                            <div>
+                              <p className="text-xs font-semibold text-slate-600 mb-1.5">本班练习概况</p>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div className="bg-blue-50 border border-blue-100 rounded-lg px-2.5 py-2 text-center">
+                                  <p className="text-lg font-bold text-blue-700">{cls.total_practices ?? 0}</p>
+                                  <p className="text-[10px] text-blue-500">总练习次</p>
+                                </div>
+                                <div className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 text-center">
+                                  <p className="text-lg font-bold text-slate-700">{cls.student_count}</p>
+                                  <p className="text-[10px] text-slate-500">班级人数</p>
+                                </div>
+                              </div>
+                            </div>
+
+                          </div>
+
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
+        </div>
         )}
 
         {/* 学生标签页 */}
@@ -1200,21 +1371,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
               </div>
             )}
 
-            {/* 当前生效作业汇总 */}
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mt-2">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                  <ClipboardList className="w-5 h-5 text-emerald-600" />
-                  当前生效作业
-                </h3>
-                <button
-                  onClick={() => void openAssignModal()}
-                  className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-1"
-                >
-                  <ClipboardList className="w-3 h-3" />
-                  布置新作业
-                </button>
-              </div>
+            {/* 作业管理已移至"作业看板"Tab */}
+            {false && <div>
               {assignmentsLoading ? (
                 <p className="text-sm text-slate-400">加载中...</p>
               ) : activeAssignments.length === 0 ? (
@@ -1364,20 +1522,29 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                             </p>
                             <p className="text-xs text-slate-400 mt-0.5">布置于 {new Date(a.created_at).toLocaleDateString('zh-CN')}</p>
                           </div>
-                          <button
-                            onClick={() => void reactivateAssignment(a.id)}
-                            className="px-2.5 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                            title="重新生效"
-                          >
-                            重新激活
-                          </button>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              onClick={() => void reactivateAssignment(a.id)}
+                              className="px-2.5 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                              title="重新生效"
+                            >
+                              重新激活
+                            </button>
+                            <button
+                              onClick={() => void deleteAssignment(a.id)}
+                              className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                              title="永久删除"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
                       ))
                     )}
                   </div>
                 )}
               </div>
-            </div>
+            </div>}
           </div>
         )}
 
@@ -1757,15 +1924,24 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                                 {a.due_date && <span className="ml-2">截止：{a.due_date}</span>}
                               </p>
                             </div>
-                            {/* 作业效果指标 */}
-                            {allSubmissionsLoaded && a.avgAccuracy != null && (
-                              <div className="text-center shrink-0">
-                                <p className={`text-lg font-bold ${a.avgAccuracy >= 85 ? 'text-emerald-600' : a.avgAccuracy >= 70 ? 'text-amber-500' : 'text-red-500'}`}>
-                                  {a.avgAccuracy}%
-                                </p>
-                                <p className="text-xs text-slate-400">平均正确率</p>
-                              </div>
-                            )}
+                            {/* 右侧：效果指标 + 删除 */}
+                            <div className="flex items-start gap-3 shrink-0">
+                              {allSubmissionsLoaded && a.avgAccuracy != null && (
+                                <div className="text-center">
+                                  <p className={`text-lg font-bold ${a.avgAccuracy >= 85 ? 'text-emerald-600' : a.avgAccuracy >= 70 ? 'text-amber-500' : 'text-red-500'}`}>
+                                    {a.avgAccuracy}%
+                                  </p>
+                                  <p className="text-xs text-slate-400">平均正确率</p>
+                                </div>
+                              )}
+                              <button
+                                onClick={() => void deleteAssignment(a.id)}
+                                className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors mt-0.5"
+                                title="永久删除作业"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
 
                           {/* 完成率进度条 */}
