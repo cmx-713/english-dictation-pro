@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, ArrowRight, Loader2, Mic, Camera, Image, Book } from 'lucide-react';
+import { FileText, ArrowRight, Loader2, Mic, Camera, Image, Book, ClipboardList } from 'lucide-react';
 import { StudentInfo } from './StudentInfo';
 import { getPendingSuggestionTaskLocal, updatePendingSuggestionTaskStatusLocal, syncSuggestionTaskStatusToSupabase } from '../utils/suggestionTaskManager';
+import { supabase } from '../lib/supabase';
 // 引入 OCR 库
 import Tesseract from 'tesseract.js';
 
@@ -37,10 +38,53 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
   const [className, setClassName] = useState('');
   const [pendingTask, setPendingTask] = useState<ReturnType<typeof getPendingSuggestionTaskLocal>>(null);
 
+  // 班级作业
+  interface ClassAssignment { id: string; class_name: string; material_id: string; material_title: string; due_date: string | null; }
+  const [classAssignment, setClassAssignment] = useState<ClassAssignment | null>(null);
+  const [assignmentLoading, setAssignmentLoading] = useState(false);
+  const [startingAssignment, setStartingAssignment] = useState(false);
+
   const handleStudentInfoChange = (name: string, number: string, classN: string) => {
     setStudentName(name);
     setStudentNumber(number);
     setClassName(classN);
+    if (classN) void loadClassAssignment(classN);
+  };
+
+  const loadClassAssignment = async (cls: string) => {
+    setAssignmentLoading(true);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const { data, error } = await supabase
+        .from('class_assignments')
+        .select('id, class_name, material_id, material_title, due_date')
+        .eq('class_name', cls)
+        .eq('is_active', true)
+        .or(`due_date.is.null,due_date.gte.${today}`)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!error && data) setClassAssignment(data);
+      else setClassAssignment(null);
+    } catch {
+      setClassAssignment(null);
+    } finally { setAssignmentLoading(false); }
+  };
+
+  const handleStartAssignment = async () => {
+    if (!classAssignment) return;
+    setStartingAssignment(true);
+    try {
+      const { data, error } = await supabase
+        .from('dictation_materials')
+        .select('content')
+        .eq('id', classAssignment.material_id)
+        .single();
+      if (error || !data?.content) { alert('加载素材失败，请稍后重试'); return; }
+      if (!studentName.trim() || !studentNumber.trim()) { alert('请先填写学生信息'); return; }
+      onStart(data.content, { studentName, studentNumber, className, inputMethod: 'text' });
+    } catch { alert('加载素材失败'); }
+    finally { setStartingAssignment(false); }
   };
 
   useEffect(() => {
@@ -183,6 +227,34 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
       <div className="bg-white rounded-xl shadow-lg p-6 md:p-8 border border-slate-200">
         {/* 学生信息输入 */}
         <StudentInfo onInfoChange={handleStudentInfoChange} />
+
+        {/* 本班作业提示卡 */}
+        {assignmentLoading && (
+          <div className="mb-5 flex items-center gap-2 text-sm text-slate-400">
+            <Loader2 className="w-4 h-4 animate-spin" />检查本班作业中...
+          </div>
+        )}
+        {!assignmentLoading && classAssignment && (
+          <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <div className="flex items-start gap-2 mb-2">
+              <ClipboardList className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-emerald-900">📚 本班有作业</p>
+                <p className="text-sm text-emerald-800 mt-0.5">{classAssignment.material_title}</p>
+                {classAssignment.due_date && (
+                  <p className="text-xs text-emerald-600 mt-0.5">截止日期：{classAssignment.due_date}</p>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => void handleStartAssignment()}
+              disabled={startingAssignment}
+              className="w-full mt-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {startingAssignment ? <><Loader2 className="w-4 h-4 animate-spin" />加载中...</> : <><ArrowRight className="w-4 h-4" />立即完成作业</>}
+            </button>
+          </div>
+        )}
 
         {pendingTask && (
           <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">

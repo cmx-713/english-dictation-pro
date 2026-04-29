@@ -15,7 +15,10 @@ import {
   BarChart3,
   Edit2,
   X,
-  Save
+  Save,
+  ClipboardList,
+  CheckCircle2,
+  Trash2
 } from 'lucide-react';
 import {
   LineChart,
@@ -113,6 +116,20 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   // 班级错因分布：class_name → { A, B, C, D, total }
   const [classErrorProfiles, setClassErrorProfiles] = useState<Record<string, { A: number; B: number; C: number; D: number; total: number }>>({});
   const [classErrorLoading, setClassErrorLoading] = useState(false);
+
+  // 作业相关状态
+  interface LibraryMaterial { id: string; title: string; difficulty_level: string; category: string; word_count: number; }
+  interface ClassAssignment { id: string; class_name: string; material_id: string; material_title: string; due_date: string | null; is_active: boolean; created_at: string; }
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [assignClass, setAssignClass] = useState('');
+  const [assignMaterialId, setAssignMaterialId] = useState('');
+  const [assignMaterialTitle, setAssignMaterialTitle] = useState('');
+  const [assignDueDate, setAssignDueDate] = useState('');
+  const [assignSaving, setAssignSaving] = useState(false);
+  const [libraryMaterials, setLibraryMaterials] = useState<LibraryMaterial[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [activeAssignments, setActiveAssignments] = useState<ClassAssignment[]>([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   
   // 编辑学生信息的状态
   const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
@@ -175,6 +192,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
 
   useEffect(() => {
     fetchData();
+    void loadActiveAssignments();
   }, []);
 
   // 更新学生班级
@@ -299,6 +317,82 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
       console.error('加载建议执行率失败:', e);
       setSuggestionStats(prev => ({ ...prev, loading: false }));
     }
+  };
+
+  // 打开布置作业弹框时加载素材库
+  const openAssignModal = async () => {
+    setShowAssignModal(true);
+    setAssignClass(classes[0]?.class_name || '');
+    setAssignMaterialId('');
+    setAssignMaterialTitle('');
+    setAssignDueDate('');
+    if (libraryMaterials.length > 0) return;
+    setLibraryLoading(true);
+    try {
+      const { data } = await supabase
+        .from('dictation_materials')
+        .select('id, title, difficulty_level, category, word_count')
+        .order('created_at', { ascending: false });
+      setLibraryMaterials(data || []);
+    } catch (e) { console.error(e); }
+    finally { setLibraryLoading(false); }
+  };
+
+  // 提交作业
+  const submitAssignment = async () => {
+    if (!assignClass || !assignMaterialId) {
+      alert('请选择班级和素材');
+      return;
+    }
+    setAssignSaving(true);
+    try {
+      const { error } = await supabase.from('class_assignments').insert({
+        class_name: assignClass,
+        material_id: assignMaterialId,
+        material_title: assignMaterialTitle,
+        due_date: assignDueDate || null,
+        is_active: true,
+      });
+      if (error) {
+        const msg = String(error.message || '');
+        if (msg.includes('class_assignments') || msg.includes('does not exist')) {
+          alert('请先在 Supabase 中执行 create_class_assignments_table.sql 初始化作业表');
+          return;
+        }
+        throw error;
+      }
+      alert(`✅ 已成功为「${assignClass}」布置作业：${assignMaterialTitle}`);
+      setShowAssignModal(false);
+      void loadActiveAssignments();
+    } catch (e: any) {
+      alert('布置失败：' + e.message);
+    } finally { setAssignSaving(false); }
+  };
+
+  // 加载当前生效的作业（用于班级 tab 展示）
+  const loadActiveAssignments = async () => {
+    setAssignmentsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('class_assignments')
+        .select('*')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false });
+      if (error) {
+        const msg = String(error.message || '');
+        if (msg.includes('class_assignments') || msg.includes('does not exist')) return;
+        throw error;
+      }
+      setActiveAssignments(data || []);
+    } catch (e) { console.error(e); }
+    finally { setAssignmentsLoading(false); }
+  };
+
+  // 下架作业
+  const deactivateAssignment = async (id: string) => {
+    if (!confirm('确认下架这条作业？学生将不再看到它。')) return;
+    await supabase.from('class_assignments').update({ is_active: false }).eq('id', id);
+    setActiveAssignments(prev => prev.filter(a => a.id !== id));
   };
 
   // 加载各班错因分布（聚合 error_summary by_subtype）
@@ -445,6 +539,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
               >
                 <RefreshCcw className="w-4 h-4" />
                 刷新
+              </button>
+              <button
+                onClick={() => void openAssignModal()}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+              >
+                <ClipboardList className="w-4 h-4" />
+                布置作业
               </button>
               <button
                 onClick={exportToCSV}
@@ -976,6 +1077,50 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                 暂无班级数据
               </div>
             )}
+
+            {/* 当前生效作业汇总 */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 mt-2">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <ClipboardList className="w-5 h-5 text-emerald-600" />
+                  当前生效作业
+                </h3>
+                <button
+                  onClick={() => void openAssignModal()}
+                  className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-1"
+                >
+                  <ClipboardList className="w-3 h-3" />
+                  布置新作业
+                </button>
+              </div>
+              {assignmentsLoading ? (
+                <p className="text-sm text-slate-400">加载中...</p>
+              ) : activeAssignments.length === 0 ? (
+                <p className="text-sm text-slate-400">暂无生效作业，点击"布置新作业"开始。</p>
+              ) : (
+                <div className="space-y-2">
+                  {activeAssignments.map(a => (
+                    <div key={a.id} className="flex items-center justify-between bg-emerald-50 border border-emerald-100 rounded-lg px-4 py-3">
+                      <div>
+                        <p className="text-sm font-semibold text-emerald-900">{a.class_name}</p>
+                        <p className="text-xs text-emerald-700 mt-0.5">
+                          📖 {a.material_title}
+                          {a.due_date && <span className="ml-2 text-slate-500">截止：{a.due_date}</span>}
+                        </p>
+                        <p className="text-xs text-slate-400 mt-0.5">布置于 {new Date(a.created_at).toLocaleDateString('zh-CN')}</p>
+                      </div>
+                      <button
+                        onClick={() => void deactivateAssignment(a.id)}
+                        className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        title="下架作业"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1202,6 +1347,104 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
           </div>
         )}
       </div>
+
+      {/* 布置作业模态框 */}
+      {showAssignModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b border-slate-100">
+              <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <ClipboardList className="w-5 h-5 text-emerald-600" />
+                布置班级作业
+              </h3>
+              <button onClick={() => setShowAssignModal(false)} className="p-2 hover:bg-slate-100 rounded-lg">
+                <X className="w-5 h-5 text-slate-500" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5 overflow-y-auto flex-1">
+              {/* 选班级 */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">选择班级 <span className="text-red-500">*</span></label>
+                <select
+                  value={assignClass}
+                  onChange={e => setAssignClass(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none bg-white"
+                >
+                  <option value="">请选择班级</option>
+                  {classes.map(c => (
+                    <option key={c.class_name} value={c.class_name}>{c.class_name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* 选素材 */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">选择听力素材 <span className="text-red-500">*</span></label>
+                {libraryLoading ? (
+                  <p className="text-sm text-slate-400">加载素材库...</p>
+                ) : (
+                  <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-60 overflow-y-auto">
+                    {libraryMaterials.map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => { setAssignMaterialId(m.id); setAssignMaterialTitle(m.title); }}
+                        className={`w-full text-left px-4 py-3 hover:bg-slate-50 transition-colors flex items-center justify-between gap-2
+                          ${assignMaterialId === m.id ? 'bg-emerald-50 border-l-4 border-emerald-500' : ''}`}
+                      >
+                        <div>
+                          <p className="text-sm font-medium text-slate-900 line-clamp-1">{m.title}</p>
+                          <p className="text-xs text-slate-400">{m.category} · {m.word_count} 词</p>
+                        </div>
+                        {assignMaterialId === m.id && <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />}
+                      </button>
+                    ))}
+                    {libraryMaterials.length === 0 && (
+                      <p className="px-4 py-6 text-sm text-slate-400 text-center">素材库暂无内容</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* 截止日期（可选） */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">截止日期（可选）</label>
+                <input
+                  type="date"
+                  value={assignDueDate}
+                  onChange={e => setAssignDueDate(e.target.value)}
+                  min={new Date().toISOString().split('T')[0]}
+                  className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none"
+                />
+              </div>
+
+              {/* 预览 */}
+              {assignClass && assignMaterialId && (
+                <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-3 text-sm text-emerald-800">
+                  📚 将为 <strong>{assignClass}</strong> 布置：{assignMaterialTitle}
+                  {assignDueDate && <>，截止 <strong>{assignDueDate}</strong></>}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 p-6 border-t border-slate-100">
+              <button
+                onClick={() => setShowAssignModal(false)}
+                className="flex-1 px-4 py-2.5 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => void submitAssignment()}
+                disabled={!assignClass || !assignMaterialId || assignSaving}
+                className="flex-1 px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {assignSaving ? '布置中...' : <><Save className="w-4 h-4" />确认布置</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 编辑学生班级对话框 */}
       {editingStudent && (
