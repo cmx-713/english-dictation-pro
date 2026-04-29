@@ -19,12 +19,13 @@ import { analyzeErrors, ErrorStats } from '../utils/errorAnalysis';
 interface ResultsScreenProps {
   results: SentenceResult[];
   onRestart: () => void;
+  onRetryRound: (retryText: string) => void;
 }
 
 // 定义标签页类型，去掉了 'ai'
 type TabType = 'overview' | 'details' | 'insights';
 
-export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart }) => {
+export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart, onRetryRound }) => {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [aiPanelWidth, setAiPanelWidth] = useState(384);
 
@@ -45,6 +46,23 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
   };
 
   const level = getDifficultyLevel();
+  const wrongSentences = results
+    .filter((r) => r.accuracy < 100)
+    .map((r) => r.original)
+    .filter(Boolean);
+
+  const handleRetryRound = () => {
+    const retryText = (wrongSentences.length > 0
+      ? wrongSentences
+      : results.map((r) => r.original).filter(Boolean)
+    ).join('\n');
+
+    if (!retryText.trim()) {
+      alert('未找到可用于再练的句子');
+      return;
+    }
+    onRetryRound(retryText);
+  };
 
   // AI 分析相关
   const [isAiOpen, setIsAiOpen] = useState(false);
@@ -383,6 +401,14 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
 
       {/* 底部按钮 */}
       <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex gap-4 z-50">
+        <button
+          onClick={handleRetryRound}
+          className="flex items-center gap-2 px-8 py-3 rounded-full bg-indigo-600 text-white font-bold shadow-lg hover:bg-indigo-700 hover:scale-105 transition-all"
+          title={wrongSentences.length > 0 ? `将再练 ${wrongSentences.length} 个错题句` : '本次全对，进行全文巩固再练'}
+        >
+          <RotateCcw size={20} />
+          再练一轮（错题优先）
+        </button>
         <button
           onClick={onRestart}
           className="flex items-center gap-2 px-8 py-3 rounded-full bg-blue-600 text-white font-bold shadow-lg hover:bg-blue-700 hover:scale-105 transition-all"

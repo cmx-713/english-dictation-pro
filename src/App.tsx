@@ -157,6 +157,10 @@ function App() {
             <ResultsScreen
               results={results}
               onRestart={handleRestart}
+              onRetryRound={(retryText: string) => {
+                setRawText(retryText);
+                navigateTo('practice');
+              }}
             />
           )}
 
