@@ -13,6 +13,10 @@ import { createSuggestionTask, savePendingSuggestionTaskLocal, syncSuggestionTas
 
 type AppMode = 'setup' | 'practice' | 'results' | 'history' | 'review' | 'teacher' | 'library';
 const LATEST_RESULTS_KEY = 'latest_results_report_v1';
+interface LatestResultsPayload {
+  results: SentenceResult[];
+  savedAt: string;
+}
 
 // URL path <-> AppMode mapping
 const pathToMode: Record<string, AppMode> = {
@@ -47,12 +51,22 @@ function App() {
   const [mode, setMode] = useState<AppMode>(() => getModeFromPath());
   const [rawText, setRawText] = useState('');
   const [results, setResults] = useState<SentenceResult[]>([]);
-  const loadLatestResults = useCallback((): SentenceResult[] | null => {
+  const loadLatestResults = useCallback((): LatestResultsPayload | null => {
     try {
       const raw = localStorage.getItem(LATEST_RESULTS_KEY);
       if (!raw) return null;
-      const parsed = JSON.parse(raw) as SentenceResult[];
-      if (!Array.isArray(parsed) || parsed.length === 0) return null;
+      const parsed = JSON.parse(raw) as LatestResultsPayload | SentenceResult[];
+
+      // 兼容旧数据格式（直接存数组）
+      if (Array.isArray(parsed)) {
+        if (parsed.length === 0) return null;
+        return {
+          results: parsed,
+          savedAt: new Date().toISOString(),
+        };
+      }
+
+      if (!Array.isArray(parsed.results) || parsed.results.length === 0) return null;
       return parsed;
     } catch {
       return null;
@@ -113,7 +127,13 @@ function App() {
 
   const handleFinish = (res: SentenceResult[]) => {
     setResults(res);
-    localStorage.setItem(LATEST_RESULTS_KEY, JSON.stringify(res));
+    localStorage.setItem(
+      LATEST_RESULTS_KEY,
+      JSON.stringify({
+        results: res,
+        savedAt: new Date().toISOString(),
+      } satisfies LatestResultsPayload)
+    );
     if (rawText && res.length > 0) {
       saveRecord(rawText, res, studentMetadata || undefined);
       if (studentMetadata?.studentNumber) {
@@ -151,7 +171,7 @@ function App() {
       alert('暂无可查看的上次分析报告');
       return;
     }
-    setResults(latest);
+    setResults(latest.results);
     navigateTo('results');
   };
 
@@ -167,6 +187,7 @@ function App() {
               onOpenLibrary={() => navigateTo('library')}
               initialText={rawText}
               hasLatestReport={Boolean(loadLatestResults())}
+              latestReportAt={loadLatestResults()?.savedAt}
               onViewLatestReport={handleViewLatestReport}
             />
           )}

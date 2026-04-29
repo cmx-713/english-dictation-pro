@@ -59,7 +59,7 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [aiPanelWidth, setAiPanelWidth] = useState(384);
   const [profileLoading, setProfileLoading] = useState(false);
-  const [weeklyProfile, setWeeklyProfile] = useState<{ totalSessions: number; topErrors: Array<{ key: string; count: number }>; message: string } | null>(null);
+  const [weeklyProfile, setWeeklyProfile] = useState<{ totalSessions: number; topErrors: Array<{ key: string; count: number; trend: 'up' | 'down' | 'flat' }>; message: string } | null>(null);
 
   // 计算统计数据
   const totalSentences = results.length;
@@ -78,6 +78,84 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
   };
 
   const level = getDifficultyLevel();
+  const currentErrorStats = analyzeErrors(results);
+  const hasWrongErrors = currentErrorStats.A.total + currentErrorStats.B.total + currentErrorStats.C.total + currentErrorStats.D.total > 0;
+  const hasLinkingErrors = currentErrorStats.B.total > 0;
+  const hasSpellingErrors = currentErrorStats.C.total > 0;
+
+  const weakForms = new Set(['to', 'of', 'and', 'that', 'but', 'as', 'than', 'at', 'for', 'from', 'was', 'were', 'do', 'does', 'can', 'could', 'have', 'has', 'had', 'will', 'would', 'shall', 'should', 'must']);
+
+  const extractWords = (text: string): string[] => {
+    const words = text.toLowerCase().match(/[a-z']+/g);
+    return words || [];
+  };
+
+  const hasSubstitutionPattern = (diffs: any[]): boolean => {
+    for (let i = 0; i < diffs.length - 1; i++) {
+      if (diffs[i][0] === 1 && diffs[i + 1][0] === -1) return true;
+      if (diffs[i][0] === -1 && diffs[i + 1][0] === 1) return true;
+    }
+    return false;
+  };
+
+  const buildRetryText = (type: 'wrong' | 'linking' | 'spelling'): string => {
+    const wrongResults = results.filter((r) => r.accuracy < 100);
+    if (wrongResults.length === 0) {
+      return results.map((r) => r.original).filter(Boolean).join('\n');
+    }
+
+    let selected = wrongResults;
+    if (type === 'linking') {
+      selected = wrongResults.filter((r) => {
+        if (hasSubstitutionPattern(r.diffs)) return true;
+        return r.diffs.some((d: any) => {
+          if (d[0] !== 1 && d[0] !== -1) return false;
+          return extractWords(d[1]).some((w) => weakForms.has(w) || w.length <= 3);
+        });
+      });
+    }
+
+    if (type === 'spelling') {
+      selected = wrongResults.filter((r) => {
+        if (hasSubstitutionPattern(r.diffs)) {
+          return r.diffs.some((d: any) => extractWords(d[1]).some((w) => w.length >= 4));
+        }
+        return r.diffs.some((d: any) => (d[0] === 1 || d[0] === -1) && /[a-zA-Z]/.test(d[1]));
+      });
+    }
+
+    if (selected.length === 0) selected = wrongResults;
+    return selected.map((r) => r.original).filter(Boolean).join('\n');
+  };
+
+  // 从错误代码（如 B1, C2）映射到再练类型
+  const getRetryTypeFromCode = (code: string): 'wrong' | 'linking' | 'spelling' => {
+    if (code.startsWith('B')) return 'linking';
+    if (code.startsWith('C')) return 'spelling';
+    return 'wrong';
+  };
+
+  const handleRetryByType = (type: 'wrong' | 'linking' | 'spelling') => {
+    if (type === 'wrong' && !hasWrongErrors) {
+      alert('本次没有错题可再练，可直接开始新练习。');
+      return;
+    }
+    if (type === 'linking' && !hasLinkingErrors) {
+      alert('本次未检测到辨音/连读类错误。');
+      return;
+    }
+    if (type === 'spelling' && !hasSpellingErrors) {
+      alert('本次未检测到拼写类错误。');
+      return;
+    }
+
+    const retryText = buildRetryText(type);
+    if (!retryText.trim()) {
+      alert('未找到可用于再练的句子');
+      return;
+    }
+    onRetryRound(retryText);
+  };
 
   React.useEffect(() => {
     const loadWeeklyProfile = async () => {
@@ -99,19 +177,35 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
         if (error) throw error;
         const rows = (data || []) as Array<{ error_summary: ErrorSummaryRecord | null; created_at: string }>;
 
-        const bySubtype: Record<string, number> = {};
-        rows.forEach((row) => {
-          const summary = row.error_summary;
-          if (!summary?.by_subtype) return;
-          Object.entries(summary.by_subtype).forEach(([k, v]) => {
-            bySubtype[k] = (bySubtype[k] || 0) + Number(v || 0);
+        const aggregateSubtypeCounts = (inputRows: Array<{ error_summary: ErrorSummaryRecord | null; created_at: string }>) => {
+          const counts: Record<string, number> = {};
+          inputRows.forEach((row) => {
+            const summary = row.error_summary;
+            if (!summary?.by_subtype) return;
+            Object.entries(summary.by_subtype).forEach(([k, v]) => {
+              counts[k] = (counts[k] || 0) + Number(v || 0);
+            });
           });
-        });
+          return counts;
+        };
+
+        const bySubtype = aggregateSubtypeCounts(rows);
+        const splitIndex = Math.max(1, Math.floor(rows.length / 2));
+        const recentRows = rows.slice(0, splitIndex);
+        const previousRows = rows.slice(splitIndex);
+        const recentCounts = aggregateSubtypeCounts(recentRows);
+        const previousCounts = aggregateSubtypeCounts(previousRows);
 
         const topErrors = Object.entries(bySubtype)
           .sort((a, b) => b[1] - a[1])
           .slice(0, 3)
-          .map(([key, count]) => ({ key, count }));
+          .map(([key, count]) => {
+            const recent = recentCounts[key] || 0;
+            const previous = previousCounts[key] || 0;
+            const trend: 'up' | 'down' | 'flat' =
+              recent > previous ? 'up' : recent < previous ? 'down' : 'flat';
+            return { key, count, trend };
+          });
 
         let message = '最近7天错误分布稳定，建议继续保持练习节奏。';
         if (topErrors.length > 0) {
@@ -478,6 +572,9 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
                         {weeklyProfile.topErrors.map((item) => (
                           <span key={item.key} className="px-2 py-1 text-xs rounded-full bg-white text-blue-700 border border-blue-200">
                             {(ERROR_CODE_LABELS[item.key] || item.key)}（{item.key}） · {item.count}
+                            <span className="ml-1">
+                              {item.trend === 'up' ? '🔺上升' : item.trend === 'down' ? '🔻下降' : '➡️持平'}
+                            </span>
                           </span>
                         ))}
                       </div>
@@ -486,11 +583,74 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
                 ) : (
                   <p className="text-sm text-blue-700">暂无足够历史数据，完成更多练习后将显示画像。</p>
                 )}
+                {weeklyProfile && weeklyProfile.topErrors.length > 0 && (() => {
+                  const topCode = weeklyProfile.topErrors[0].key;
+                  const retryType = getRetryTypeFromCode(topCode);
+                  const topLabel = ERROR_CODE_LABELS[topCode] || topCode;
+                  const canRetry =
+                    retryType === 'linking' ? hasLinkingErrors :
+                    retryType === 'spelling' ? hasSpellingErrors :
+                    hasWrongErrors;
+                  return (
+                    <div className="mt-3 flex flex-col gap-1">
+                      <button
+                        onClick={() => handleRetryByType(retryType)}
+                        disabled={!canRetry}
+                        className="px-3 py-2 text-xs font-semibold rounded-lg bg-amber-500 text-white hover:bg-amber-600 transition-colors disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed w-fit"
+                        title={canRetry ? `针对历史高频错误「${topLabel}」专项再练` : `本次无「${topLabel}」类型错误`}
+                      >
+                        历史弱点专项再练：{topLabel}
+                      </button>
+                      <p className="text-xs text-blue-600">
+                        基于你近7天最高频错误类型，在本次句子中专项再练
+                        {!canRetry && '（本次无此类错误，按钮已禁用）'}
+                      </p>
+                    </div>
+                  );
+                })()}
               </div>
 
               <h4 className="font-bold text-slate-800 mb-4 px-2 border-l-4 border-indigo-500">错误类型详细统计 (本地分析)</h4>
               <div className="overflow-hidden bg-white shadow-sm rounded-xl">
-                <ErrorStatsTable stats={analyzeErrors(results)} />
+                <ErrorStatsTable stats={currentErrorStats} />
+              </div>
+            </div>
+
+            <div className="mt-8 mb-8 text-left">
+              <h4 className="font-bold text-slate-800 mb-4 px-2 border-l-4 border-emerald-500">可执行建议卡（本次）</h4>
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4">
+                <p className="text-sm text-emerald-800 font-medium mb-3">
+                  建议优先处理：辨音类 {currentErrorStats.B.total} 次、拼写类 {currentErrorStats.C.total} 次、漏词类 {currentErrorStats.A.total} 次。
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => handleRetryByType('wrong')}
+                    disabled={!hasWrongErrors}
+                    className="px-3 py-2 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed"
+                    title={hasWrongErrors ? '针对本次错题进行再练' : '本次无错题'}
+                  >
+                    再练错题句
+                  </button>
+                  <button
+                    onClick={() => handleRetryByType('linking')}
+                    disabled={!hasLinkingErrors}
+                    className="px-3 py-2 text-xs font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed"
+                    title={hasLinkingErrors ? '针对连读/辨音类问题再练' : '本次无连读/辨音类错误'}
+                  >
+                    连读专项再练
+                  </button>
+                  <button
+                    onClick={() => handleRetryByType('spelling')}
+                    disabled={!hasSpellingErrors}
+                    className="px-3 py-2 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed"
+                    title={hasSpellingErrors ? '针对拼写类问题再练' : '本次无拼写类错误'}
+                  >
+                    拼写专项再练
+                  </button>
+                </div>
+                <p className="text-xs text-emerald-700 mt-2">
+                  规则说明：本版先基于本次错题句进行专项筛选，不依赖 LLM。
+                </p>
               </div>
             </div>
 

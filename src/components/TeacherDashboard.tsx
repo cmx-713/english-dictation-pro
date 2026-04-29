@@ -74,6 +74,27 @@ interface DifficultyStats {
   avg_word_count: number;
 }
 
+interface SuggestionTask {
+  id: string;
+  student_name: string;
+  class_name: string;
+  status: 'pending' | 'done' | 'dismissed';
+  created_at: string;
+  avg_accuracy: number;
+  wrong_sentence_count: number;
+}
+
+interface SuggestionStats {
+  total: number;
+  done: number;
+  dismissed: number;
+  pending: number;
+  byClass: Array<{ class_name: string; total: number; done: number; rate: number }>;
+  topStudents: Array<{ student_name: string; class_name: string; done: number; total: number; rate: number }>;
+  loading: boolean;
+  unsupported: boolean;
+}
+
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) => {
   const [students, setStudents] = useState<StudentSummary[]>([]);
   const [classes, setClasses] = useState<ClassStats[]>([]);
@@ -83,7 +104,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [error, setError] = useState<string | null>(null);
   const [selectedClass, setSelectedClass] = useState<string>('全部');
   const [expandedStudent, setExpandedStudent] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'classes' | 'trends'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'classes' | 'trends' | 'suggestions'>('overview');
+  const [suggestionStats, setSuggestionStats] = useState<SuggestionStats>({
+    total: 0, done: 0, dismissed: 0, pending: 0,
+    byClass: [], topStudents: [], loading: false, unsupported: false,
+  });
   
   // 编辑学生信息的状态
   const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
@@ -218,6 +243,60 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     }
   };
 
+  // 加载建议执行率数据
+  const loadSuggestionStats = async () => {
+    setSuggestionStats(prev => ({ ...prev, loading: true }));
+    try {
+      const { data, error } = await supabase
+        .from('suggestion_tasks')
+        .select('id, student_name, class_name, status, created_at, avg_accuracy, wrong_sentence_count')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        const msg = String(error.message || '');
+        if (msg.includes('suggestion_tasks') || msg.includes('does not exist') || msg.includes('relation')) {
+          setSuggestionStats(prev => ({ ...prev, loading: false, unsupported: true }));
+          return;
+        }
+        throw error;
+      }
+
+      const tasks = (data || []) as SuggestionTask[];
+      const total = tasks.length;
+      const done = tasks.filter(t => t.status === 'done').length;
+      const dismissed = tasks.filter(t => t.status === 'dismissed').length;
+      const pending = tasks.filter(t => t.status === 'pending').length;
+
+      // 按班级汇总
+      const classMap = new Map<string, { total: number; done: number }>();
+      tasks.forEach(t => {
+        const cls = t.class_name || '未知班级';
+        const cur = classMap.get(cls) || { total: 0, done: 0 };
+        classMap.set(cls, { total: cur.total + 1, done: cur.done + (t.status === 'done' ? 1 : 0) });
+      });
+      const byClass = Array.from(classMap.entries())
+        .map(([class_name, v]) => ({ class_name, ...v, rate: v.total > 0 ? Math.round((v.done / v.total) * 100) : 0 }))
+        .sort((a, b) => b.rate - a.rate);
+
+      // 按学生汇总
+      const stuMap = new Map<string, { class_name: string; total: number; done: number }>();
+      tasks.forEach(t => {
+        const key = t.student_name;
+        const cur = stuMap.get(key) || { class_name: t.class_name || '', total: 0, done: 0 };
+        stuMap.set(key, { ...cur, total: cur.total + 1, done: cur.done + (t.status === 'done' ? 1 : 0) });
+      });
+      const topStudents = Array.from(stuMap.entries())
+        .map(([student_name, v]) => ({ student_name, ...v, rate: v.total > 0 ? Math.round((v.done / v.total) * 100) : 0 }))
+        .sort((a, b) => b.rate - a.rate)
+        .slice(0, 10);
+
+      setSuggestionStats({ total, done, dismissed, pending, byClass, topStudents, loading: false, unsupported: false });
+    } catch (e) {
+      console.error('加载建议执行率失败:', e);
+      setSuggestionStats(prev => ({ ...prev, loading: false }));
+    }
+  };
+
   // 展开/收起学生详情
   const toggleStudent = async (studentName: string) => {
     if (expandedStudent === studentName) {
@@ -334,16 +413,22 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
           </div>
 
           {/* 标签页 */}
-          <div className="flex gap-2 mt-4 border-b border-slate-200">
+          <div className="flex gap-2 mt-4 border-b border-slate-200 flex-wrap">
             {[
               { key: 'overview', label: '总览', icon: BarChart3 },
               { key: 'students', label: '学生', icon: Users },
               { key: 'classes', label: '班级', icon: BookOpen },
-              { key: 'trends', label: '趋势', icon: TrendingUp }
+              { key: 'trends', label: '趋势', icon: TrendingUp },
+              { key: 'suggestions', label: '建议执行率', icon: Award }
             ].map(tab => (
               <button
                 key={tab.key}
-                onClick={() => setActiveTab(tab.key as any)}
+                onClick={() => {
+                  setActiveTab(tab.key as any);
+                  if (tab.key === 'suggestions' && suggestionStats.total === 0 && !suggestionStats.loading && !suggestionStats.unsupported) {
+                    void loadSuggestionStats();
+                  }
+                }}
                 className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-colors ${activeTab === tab.key
                   ? 'border-blue-600 text-blue-600'
                   : 'border-transparent text-slate-600 hover:text-slate-900'
@@ -863,6 +948,136 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                 </BarChart>
               </ResponsiveContainer>
             </div>
+          </div>
+        )}
+
+        {/* 建议执行率标签页 */}
+        {activeTab === 'suggestions' && (
+          <div className="space-y-6">
+            {suggestionStats.unsupported ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
+                <p className="text-amber-800 font-semibold mb-1">建议执行率功能尚未启用</p>
+                <p className="text-amber-700 text-sm">请先在 Supabase 中执行 <code className="font-mono bg-amber-100 px-1 rounded">create_suggestion_tasks_table.sql</code> 初始化数据表。</p>
+              </div>
+            ) : suggestionStats.loading ? (
+              <div className="text-center py-12 text-slate-500">正在加载建议执行率数据...</div>
+            ) : suggestionStats.total === 0 ? (
+              <div className="text-center py-12 text-slate-500">
+                <p className="font-medium mb-1">暂无建议执行数据</p>
+                <p className="text-sm">学生完成练习后系统会自动生成建议任务，执行数据将在此处统计。</p>
+              </div>
+            ) : (
+              <>
+                {/* 总体执行率卡片 */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  {[
+                    { label: '总建议数', value: suggestionStats.total, color: 'bg-blue-50 text-blue-700', sub: '' },
+                    { label: '已完成', value: suggestionStats.done, color: 'bg-emerald-50 text-emerald-700',
+                      sub: `完成率 ${suggestionStats.total > 0 ? Math.round((suggestionStats.done / suggestionStats.total) * 100) : 0}%` },
+                    { label: '已忽略', value: suggestionStats.dismissed, color: 'bg-slate-50 text-slate-600',
+                      sub: `忽略率 ${suggestionStats.total > 0 ? Math.round((suggestionStats.dismissed / suggestionStats.total) * 100) : 0}%` },
+                    { label: '待执行', value: suggestionStats.pending, color: 'bg-amber-50 text-amber-700',
+                      sub: `待处理率 ${suggestionStats.total > 0 ? Math.round((suggestionStats.pending / suggestionStats.total) * 100) : 0}%` },
+                  ].map(card => (
+                    <div key={card.label} className={`rounded-xl p-4 ${card.color} border border-current/10`}>
+                      <p className="text-sm font-medium opacity-75">{card.label}</p>
+                      <p className="text-3xl font-bold mt-1">{card.value}</p>
+                      {card.sub && <p className="text-xs mt-1 opacity-75">{card.sub}</p>}
+                    </div>
+                  ))}
+                </div>
+
+                {/* 总完成率进度条 */}
+                {suggestionStats.total > 0 && (() => {
+                  const rate = Math.round((suggestionStats.done / suggestionStats.total) * 100);
+                  return (
+                    <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
+                      <h3 className="text-base font-semibold text-slate-900 mb-3">整体建议完成率</h3>
+                      <div className="flex items-center gap-3">
+                        <div className="flex-1 bg-slate-100 rounded-full h-4 overflow-hidden">
+                          <div
+                            className="h-4 rounded-full bg-emerald-500 transition-all"
+                            style={{ width: `${rate}%` }}
+                          />
+                        </div>
+                        <span className="text-lg font-bold text-emerald-700 w-12 text-right">{rate}%</span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-2">共 {suggestionStats.total} 条建议，已完成 {suggestionStats.done} 条</p>
+                    </div>
+                  );
+                })()}
+
+                {/* 按班级分组 */}
+                {suggestionStats.byClass.length > 0 && (
+                  <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
+                    <h3 className="text-base font-semibold text-slate-900 mb-4">各班完成率</h3>
+                    <div className="space-y-3">
+                      {suggestionStats.byClass.map(cls => (
+                        <div key={cls.class_name} className="flex items-center gap-3">
+                          <span className="text-sm font-medium text-slate-700 w-28 shrink-0">{cls.class_name || '未知班级'}</span>
+                          <div className="flex-1 bg-slate-100 rounded-full h-3 overflow-hidden">
+                            <div
+                              className="h-3 rounded-full bg-blue-500 transition-all"
+                              style={{ width: `${cls.rate}%` }}
+                            />
+                          </div>
+                          <span className="text-sm font-semibold text-blue-700 w-10 text-right">{cls.rate}%</span>
+                          <span className="text-xs text-slate-400 w-16 text-right">{cls.done}/{cls.total}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 学生执行排行 */}
+                {suggestionStats.topStudents.length > 0 && (
+                  <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-base font-semibold text-slate-900">学生执行率排行（Top 10）</h3>
+                      <button
+                        onClick={() => void loadSuggestionStats()}
+                        className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                      >
+                        <RefreshCcw className="w-3 h-3" />
+                        刷新
+                      </button>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-slate-500 border-b border-slate-100">
+                            <th className="pb-2 pr-3">排名</th>
+                            <th className="pb-2 pr-3">姓名</th>
+                            <th className="pb-2 pr-3">班级</th>
+                            <th className="pb-2 pr-3 text-right">完成/总数</th>
+                            <th className="pb-2 text-right">完成率</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {suggestionStats.topStudents.map((stu, idx) => (
+                            <tr key={stu.student_name} className="border-b border-slate-50 hover:bg-slate-50">
+                              <td className="py-2 pr-3 text-slate-400 font-mono">{idx + 1}</td>
+                              <td className="py-2 pr-3 font-medium text-slate-900">{stu.student_name}</td>
+                              <td className="py-2 pr-3 text-slate-500">{stu.class_name || '-'}</td>
+                              <td className="py-2 pr-3 text-right text-slate-600">{stu.done}/{stu.total}</td>
+                              <td className="py-2 text-right">
+                                <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${
+                                  stu.rate >= 80 ? 'bg-emerald-100 text-emerald-700' :
+                                  stu.rate >= 50 ? 'bg-blue-100 text-blue-700' :
+                                  'bg-slate-100 text-slate-600'
+                                }`}>
+                                  {stu.rate}%
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>

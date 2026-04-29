@@ -10,10 +10,11 @@ interface SetupScreenProps {
   onOpenLibrary: () => void;
   onStart: (text: string, metadata?: { studentName: string; studentNumber: string; className: string; inputMethod: 'text' | 'voice' | 'image' }) => void;
   hasLatestReport?: boolean;
+  latestReportAt?: string;
   onViewLatestReport?: () => void;
 }
 
-export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary, initialText = '', hasLatestReport = false, onViewLatestReport }) => {
+export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary, initialText = '', hasLatestReport = false, latestReportAt, onViewLatestReport }) => {
   const [text, setText] = useState(initialText);
 
   // Update text if initialText changes (e.g. coming back from library)
@@ -220,12 +221,24 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
             从听力库选择内容
           </button>
           {hasLatestReport && onViewLatestReport && (
-            <button
-              onClick={onViewLatestReport}
-              className="flex items-center gap-2 bg-blue-50 text-blue-700 px-4 py-2 rounded-lg font-medium hover:bg-blue-100 transition-colors border border-blue-200 w-full justify-center md:w-auto"
-            >
-              查看上次分析报告
-            </button>
+            <div className="w-full md:w-auto">
+              <button
+                onClick={onViewLatestReport}
+                className="flex items-center gap-2 bg-blue-50 text-blue-700 px-4 py-2 rounded-lg font-medium hover:bg-blue-100 transition-colors border border-blue-200 w-full justify-center md:w-auto"
+              >
+                查看上次分析报告
+              </button>
+              {latestReportAt && (
+                <p className="mt-1 text-center md:text-left text-xs text-slate-500">
+                  上次报告：{new Date(latestReportAt).toLocaleString('zh-CN', {
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </p>
+              )}
+            </div>
           )}
         </div>
 
