@@ -15,19 +15,51 @@ import { AIAssistant } from './AIAssistant';
 import { OVERALL_ANALYSIS_SYSTEM_PROMPT } from '../utils/aiPrompts';
 import { Bot, AlertTriangle, ArrowUp, ArrowRight, ArrowDown, CheckCircle2, MessageSquare, ChevronRight } from 'lucide-react';
 import { analyzeErrors, ErrorStats } from '../utils/errorAnalysis';
+import { supabase } from '../lib/supabase';
 
 interface ResultsScreenProps {
   results: SentenceResult[];
   onRestart: () => void;
   onRetryRound: (retryText: string) => void;
+  studentMetadata: {
+    studentName: string;
+    studentNumber: string;
+    className: string;
+    inputMethod: 'text' | 'voice' | 'image';
+  } | null;
 }
 
 // 定义标签页类型，去掉了 'ai'
 type TabType = 'overview' | 'details' | 'insights';
 
-export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart, onRetryRound }) => {
+interface ErrorSummaryRecord {
+  by_subtype?: Record<string, number>;
+}
+
+const ERROR_CODE_LABELS: Record<string, string> = {
+  A1: '漏冠词',
+  A2: '漏介词',
+  A3: '漏连词',
+  A4: '漏代词',
+  A5: '漏助动词',
+  B1: '连读误判',
+  B2: '弱读误判',
+  B3: '同音混淆',
+  B4: '尾音丢失',
+  B5: '缩读误解',
+  C1: '单词拼错',
+  C2: '大小写错误',
+  C3: '标点缺失',
+  D1: '时态错误',
+  D2: '单复数错误',
+  D3: '主谓不一致',
+};
+
+export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart, onRetryRound, studentMetadata }) => {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [aiPanelWidth, setAiPanelWidth] = useState(384);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [weeklyProfile, setWeeklyProfile] = useState<{ totalSessions: number; topErrors: Array<{ key: string; count: number }>; message: string } | null>(null);
 
   // 计算统计数据
   const totalSentences = results.length;
@@ -46,6 +78,62 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
   };
 
   const level = getDifficultyLevel();
+
+  React.useEffect(() => {
+    const loadWeeklyProfile = async () => {
+      if (!studentMetadata?.studentName) {
+        setWeeklyProfile(null);
+        return;
+      }
+      setProfileLoading(true);
+      try {
+        const since = new Date();
+        since.setDate(since.getDate() - 7);
+        const { data, error } = await supabase
+          .from('practice_records')
+          .select('error_summary, created_at')
+          .eq('student_name', studentMetadata.studentName)
+          .gte('created_at', since.toISOString())
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        const rows = (data || []) as Array<{ error_summary: ErrorSummaryRecord | null; created_at: string }>;
+
+        const bySubtype: Record<string, number> = {};
+        rows.forEach((row) => {
+          const summary = row.error_summary;
+          if (!summary?.by_subtype) return;
+          Object.entries(summary.by_subtype).forEach(([k, v]) => {
+            bySubtype[k] = (bySubtype[k] || 0) + Number(v || 0);
+          });
+        });
+
+        const topErrors = Object.entries(bySubtype)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([key, count]) => ({ key, count }));
+
+        let message = '最近7天错误分布稳定，建议继续保持练习节奏。';
+        if (topErrors.length > 0) {
+          message = `最近7天高频错因：${topErrors
+            .map((e) => `${ERROR_CODE_LABELS[e.key] || e.key}(${e.count})`)
+            .join('、')}。建议优先专项巩固。`;
+        }
+
+        setWeeklyProfile({
+          totalSessions: rows.length,
+          topErrors,
+          message,
+        });
+      } catch (e) {
+        console.error('加载最近7天错因画像失败:', e);
+        setWeeklyProfile(null);
+      } finally {
+        setProfileLoading(false);
+      }
+    };
+    void loadWeeklyProfile();
+  }, [studentMetadata?.studentName]);
   const wrongSentences = results
     .filter((r) => r.accuracy < 100)
     .map((r) => r.original)
@@ -377,6 +465,29 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
             </div>
 
             <div className="mt-8 mb-8 text-left">
+              <h4 className="font-bold text-slate-800 mb-4 px-2 border-l-4 border-blue-500">最近7天错因画像</h4>
+              <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 mb-6">
+                {profileLoading ? (
+                  <p className="text-sm text-blue-700">正在生成最近7天错因画像...</p>
+                ) : weeklyProfile ? (
+                  <>
+                    <p className="text-sm text-blue-800 font-medium mb-2">{weeklyProfile.message}</p>
+                    <p className="text-xs text-blue-700 mb-2">近7天有效练习：{weeklyProfile.totalSessions} 次</p>
+                    {weeklyProfile.topErrors.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {weeklyProfile.topErrors.map((item) => (
+                          <span key={item.key} className="px-2 py-1 text-xs rounded-full bg-white text-blue-700 border border-blue-200">
+                            {(ERROR_CODE_LABELS[item.key] || item.key)}（{item.key}） · {item.count}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-sm text-blue-700">暂无足够历史数据，完成更多练习后将显示画像。</p>
+                )}
+              </div>
+
               <h4 className="font-bold text-slate-800 mb-4 px-2 border-l-4 border-indigo-500">错误类型详细统计 (本地分析)</h4>
               <div className="overflow-hidden bg-white shadow-sm rounded-xl">
                 <ErrorStatsTable stats={analyzeErrors(results)} />

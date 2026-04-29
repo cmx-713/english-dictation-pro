@@ -9,9 +9,11 @@ interface SetupScreenProps {
   initialText?: string;
   onOpenLibrary: () => void;
   onStart: (text: string, metadata?: { studentName: string; studentNumber: string; className: string; inputMethod: 'text' | 'voice' | 'image' }) => void;
+  hasLatestReport?: boolean;
+  onViewLatestReport?: () => void;
 }
 
-export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary, initialText = '' }) => {
+export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary, initialText = '', hasLatestReport = false, onViewLatestReport }) => {
   const [text, setText] = useState(initialText);
 
   // Update text if initialText changes (e.g. coming back from library)
@@ -217,6 +219,14 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
             <Book size={20} className="text-blue-600" />
             从听力库选择内容
           </button>
+          {hasLatestReport && onViewLatestReport && (
+            <button
+              onClick={onViewLatestReport}
+              className="flex items-center gap-2 bg-blue-50 text-blue-700 px-4 py-2 rounded-lg font-medium hover:bg-blue-100 transition-colors border border-blue-200 w-full justify-center md:w-auto"
+            >
+              查看上次分析报告
+            </button>
+          )}
         </div>
 
         <div className="flex gap-3 mb-6 border-b border-slate-100 pb-4">

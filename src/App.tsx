@@ -12,6 +12,7 @@ import { registerStudent } from './utils/studentManager';
 import { createSuggestionTask, savePendingSuggestionTaskLocal, syncSuggestionTaskToSupabase } from './utils/suggestionTaskManager';
 
 type AppMode = 'setup' | 'practice' | 'results' | 'history' | 'review' | 'teacher' | 'library';
+const LATEST_RESULTS_KEY = 'latest_results_report_v1';
 
 // URL path <-> AppMode mapping
 const pathToMode: Record<string, AppMode> = {
@@ -46,6 +47,18 @@ function App() {
   const [mode, setMode] = useState<AppMode>(() => getModeFromPath());
   const [rawText, setRawText] = useState('');
   const [results, setResults] = useState<SentenceResult[]>([]);
+  const loadLatestResults = useCallback((): SentenceResult[] | null => {
+    try {
+      const raw = localStorage.getItem(LATEST_RESULTS_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as SentenceResult[];
+      if (!Array.isArray(parsed) || parsed.length === 0) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const [studentMetadata, setStudentMetadata] = useState<{
     studentName: string;
     studentNumber: string;
@@ -100,6 +113,7 @@ function App() {
 
   const handleFinish = (res: SentenceResult[]) => {
     setResults(res);
+    localStorage.setItem(LATEST_RESULTS_KEY, JSON.stringify(res));
     if (rawText && res.length > 0) {
       saveRecord(rawText, res, studentMetadata || undefined);
       if (studentMetadata?.studentNumber) {
@@ -131,6 +145,16 @@ function App() {
     navigateTo('setup');
   };
 
+  const handleViewLatestReport = () => {
+    const latest = loadLatestResults();
+    if (!latest) {
+      alert('暂无可查看的上次分析报告');
+      return;
+    }
+    setResults(latest);
+    navigateTo('results');
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
       <Header onRestart={handleRestart} onViewHistory={handleViewHistory} />
@@ -142,6 +166,8 @@ function App() {
               onStart={handleStart}
               onOpenLibrary={() => navigateTo('library')}
               initialText={rawText}
+              hasLatestReport={Boolean(loadLatestResults())}
+              onViewLatestReport={handleViewLatestReport}
             />
           )}
 
@@ -167,6 +193,7 @@ function App() {
             <ResultsScreen
               results={results}
               onRestart={handleRestart}
+              studentMetadata={studentMetadata}
               onRetryRound={(retryText: string) => {
                 setRawText(retryText);
                 navigateTo('practice');
