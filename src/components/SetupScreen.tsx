@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FileText, ArrowRight, Loader2, Mic, Camera, Image, Book } from 'lucide-react';
 import { StudentInfo } from './StudentInfo';
+import { getPendingSuggestionTaskLocal, updatePendingSuggestionTaskStatusLocal, syncSuggestionTaskStatusToSupabase } from '../utils/suggestionTaskManager';
 // 引入 OCR 库
 import Tesseract from 'tesseract.js';
 
@@ -31,11 +32,40 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
   const [studentName, setStudentName] = useState('');
   const [studentNumber, setStudentNumber] = useState('');
   const [className, setClassName] = useState('');
+  const [pendingTask, setPendingTask] = useState<ReturnType<typeof getPendingSuggestionTaskLocal>>(null);
 
   const handleStudentInfoChange = (name: string, number: string, classN: string) => {
     setStudentName(name);
     setStudentNumber(number);
     setClassName(classN);
+  };
+
+  useEffect(() => {
+    if (!studentNumber) {
+      setPendingTask(null);
+      return;
+    }
+    setPendingTask(getPendingSuggestionTaskLocal(studentNumber));
+  }, [studentNumber]);
+
+  const handleContinuePendingTask = () => {
+    if (!pendingTask) return;
+    updatePendingSuggestionTaskStatusLocal('done');
+    void syncSuggestionTaskStatusToSupabase(pendingTask.id, 'done');
+    setPendingTask(null);
+    onStart(pendingTask.retry_text, {
+      studentName,
+      studentNumber,
+      className,
+      inputMethod: 'text',
+    });
+  };
+
+  const handleDismissPendingTask = () => {
+    if (!pendingTask) return;
+    updatePendingSuggestionTaskStatusLocal('dismissed');
+    void syncSuggestionTaskStatusToSupabase(pendingTask.id, 'dismissed');
+    setPendingTask(null);
   };
 
   // --- 真正的图片识别逻辑 ---
@@ -150,6 +180,34 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
       <div className="bg-white rounded-xl shadow-lg p-6 md:p-8 border border-slate-200">
         {/* 学生信息输入 */}
         <StudentInfo onInfoChange={handleStudentInfoChange} />
+
+        {pendingTask && (
+          <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-semibold text-amber-800">📌 上次练习建议未完成</p>
+            <p className="mt-1 text-sm text-amber-700">{pendingTask.summary}</p>
+            <div className="mt-2 space-y-1">
+              {pendingTask.suggestions.map((item, idx) => (
+                <p key={idx} className="text-xs text-amber-700">• {item}</p>
+              ))}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={handleContinuePendingTask}
+                className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
+              >
+                继续执行建议
+              </button>
+              <button
+                type="button"
+                onClick={handleDismissPendingTask}
+                className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100"
+              >
+                稍后再说
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="flex gap-2 mb-4">
           <button

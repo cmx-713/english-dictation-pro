@@ -9,6 +9,7 @@ import { TeacherDashboard } from './components/TeacherDashboard';
 import { LibraryScreen, DictationMaterial } from './components/LibraryScreen';
 import { saveRecord } from './utils/historyManager';
 import { registerStudent } from './utils/studentManager';
+import { createSuggestionTask, savePendingSuggestionTaskLocal, syncSuggestionTaskToSupabase } from './utils/suggestionTaskManager';
 
 type AppMode = 'setup' | 'practice' | 'results' | 'history' | 'review' | 'teacher' | 'library';
 
@@ -101,6 +102,15 @@ function App() {
     setResults(res);
     if (rawText && res.length > 0) {
       saveRecord(rawText, res, studentMetadata || undefined);
+      if (studentMetadata?.studentNumber) {
+        const task = createSuggestionTask(res, {
+          studentName: studentMetadata.studentName,
+          studentNumber: studentMetadata.studentNumber,
+          className: studentMetadata.className,
+        });
+        savePendingSuggestionTaskLocal(task);
+        void syncSuggestionTaskToSupabase(task);
+      }
     }
     navigateTo('results');
   };

@@ -399,6 +399,13 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
         )}
       </div>
 
+      {/* 闭环提示：告诉学生建议会被保留，便于下次继续 */}
+      <div className="mt-6 mb-4 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-center">
+        <p className="text-sm font-medium text-indigo-800">
+          📌 本次练习建议已自动保存，下次打开系统可继续执行建议练习。
+        </p>
+      </div>
+
       {/* 底部按钮 */}
       <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex gap-4 z-50">
         <button
