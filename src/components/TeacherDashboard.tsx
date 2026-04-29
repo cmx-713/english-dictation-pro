@@ -693,16 +693,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
               { key: 'students', label: '学生', icon: Users },
               { key: 'classes', label: '班级', icon: BookOpen },
               { key: 'trends', label: '趋势', icon: TrendingUp },
-              { key: 'suggestions', label: '建议执行率', icon: Award },
               { key: 'assignments', label: '作业看板', icon: ClipboardList }
             ].map(tab => (
               <button
                 key={tab.key}
                 onClick={() => {
                   setActiveTab(tab.key as any);
-                  if (tab.key === 'suggestions' && suggestionStats.total === 0 && !suggestionStats.loading && !suggestionStats.unsupported) {
-                    void loadSuggestionStats();
-                  }
                   if (tab.key === 'classes' && Object.keys(classErrorProfiles).length === 0 && !classErrorLoading) {
                     void loadClassErrorProfiles();
                   }
@@ -1641,8 +1637,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
           </div>
         )}
 
-        {/* 建议执行率标签页 */}
-        {activeTab === 'suggestions' && (
+        {/* 建议执行率已移除 */}
+        {false && (
           <div className="space-y-6">
             {suggestionStats.unsupported ? (
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">

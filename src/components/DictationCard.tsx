@@ -26,8 +26,47 @@ export const DictationCard: React.FC<DictationCardProps> = ({
   const [errorFeedback, setErrorFeedback] = useState<string[]>([]);
   const [isPlayingLocal, setIsPlayingLocal] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [progress, setProgress] = useState(0); // 0 ~ text.length
+  const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const startOffsetRef = useRef(0); // 当前 utterance 起始字符偏移
+  const totalLength = sentence.text.length;
+
+  // 播放从指定字符位置开始的文本
+  const playFromOffset = (offset: number) => {
+    window.speechSynthesis.cancel();
+    const safeOffset = Math.max(0, Math.min(offset, totalLength - 1));
+    const fragment = sentence.text.slice(safeOffset);
+    if (!fragment) return;
+    const utterance = new SpeechSynthesisUtterance(fragment);
+    if (voice) utterance.voice = voice;
+    utterance.rate = speechRate;
+    startOffsetRef.current = safeOffset;
+    setProgress(safeOffset);
+
+    utterance.onstart = () => {
+      setIsPlayingLocal(true);
+      setIsPaused(false);
+    };
+    utterance.onboundary = (e) => {
+      // charIndex 是相对当前 utterance（fragment）的字符位置
+      const abs = startOffsetRef.current + (e.charIndex || 0);
+      setProgress(prev => (isDragging ? prev : Math.min(abs, totalLength)));
+    };
+    utterance.onend = () => {
+      setIsPlayingLocal(false);
+      setIsPaused(false);
+      setProgress(totalLength);
+    };
+    utterance.onerror = () => {
+      setIsPlayingLocal(false);
+      setIsPaused(false);
+    };
+
+    utteranceRef.current = utterance;
+    window.speechSynthesis.speak(utterance);
+  };
 
   const handlePlay = () => {
     if (isPaused) {
@@ -39,29 +78,22 @@ export const DictationCard: React.FC<DictationCardProps> = ({
       setIsPaused(true);
       setIsPlayingLocal(false);
     } else {
+      // 若已播放完，从头开始；否则从当前位置继续
+      const startAt = progress >= totalLength ? 0 : progress;
+      playFromOffset(startAt);
+    }
+  };
+
+  // 拖动进度条
+  const handleSeek = (newOffset: number) => {
+    const wasPlaying = isPlayingLocal || isPaused;
+    setProgress(newOffset);
+    if (wasPlaying) {
+      playFromOffset(newOffset);
+    } else {
       window.speechSynthesis.cancel();
-
-      const utterance = new SpeechSynthesisUtterance(sentence.text);
-      if (voice) utterance.voice = voice;
-      utterance.rate = speechRate;
-
-      utterance.onstart = () => {
-        setIsPlayingLocal(true);
-        setIsPaused(false);
-      };
-
-      utterance.onend = () => {
-        setIsPlayingLocal(false);
-        setIsPaused(false);
-      };
-
-      utterance.onerror = () => {
-        setIsPlayingLocal(false);
-        setIsPaused(false);
-      };
-
-      utteranceRef.current = utterance;
-      window.speechSynthesis.speak(utterance);
+      setIsPaused(false);
+      startOffsetRef.current = newOffset;
     }
   };
 
@@ -71,6 +103,13 @@ export const DictationCard: React.FC<DictationCardProps> = ({
       inputRef.current?.focus();
     }
   }, [autoPlay]);
+
+  // 卸载或换句时清理
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis.cancel();
+    };
+  }, [sentence.id]);
 
   const handleSubmit = () => {
     if (!input.trim()) return;
@@ -122,31 +161,57 @@ export const DictationCard: React.FC<DictationCardProps> = ({
       animate={{ opacity: 1, y: 0 }}
       className={`bg-white rounded-xl shadow-md p-6 mb-6 border-l-4 ${isSubmitted ? (diffResult?.accuracy === 100 ? 'border-green-500' : 'border-orange-500') : 'border-primary'}`}
     >
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handlePlay}
-            className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${isPlayingLocal || isPaused
-              ? 'bg-primary text-white shadow-md'
-              : 'bg-primary/10 text-primary hover:bg-primary hover:text-white'
-              }`}
-            title={isPlayingLocal ? "暂停" : isPaused ? "继续播放" : "播放句子"}
-          >
-            {isPlayingLocal ? (
-              <Pause size={20} />
-            ) : (
-              <Play size={20} className="ml-0.5" />
-            )}
-          </button>
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-2">
           <span className="text-sm text-gray-500 font-medium">
             {isSubmitted ? "原文与对比" : isPlayingLocal ? "正在播放..." : isPaused ? "已暂停" : "请听写句子"}
           </span>
+          {isSubmitted && (
+            <div className={`px-3 py-1 rounded-full text-sm font-bold ${diffResult?.accuracy === 100 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
+              正确率: {diffResult?.accuracy}%
+            </div>
+          )}
         </div>
-        {isSubmitted && (
-          <div className={`px-3 py-1 rounded-full text-sm font-bold ${diffResult?.accuracy === 100 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
-            正确率: {diffResult?.accuracy}%
-          </div>
-        )}
+
+        {/* 播放控制条：播放按钮 + 可拖动进度条 */}
+        <div className="flex items-center gap-3 bg-primary/5 rounded-xl px-3 py-2.5">
+          <button
+            onClick={handlePlay}
+            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all shrink-0 ${
+              isPlayingLocal || isPaused
+                ? 'bg-primary text-white shadow-md'
+                : 'bg-primary/10 text-primary hover:bg-primary hover:text-white'
+            }`}
+            title={isPlayingLocal ? "暂停" : isPaused ? "继续播放" : "播放句子"}
+          >
+            {isPlayingLocal ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
+          </button>
+
+          <input
+            type="range"
+            min={0}
+            max={totalLength}
+            step={1}
+            value={Math.min(progress, totalLength)}
+            onChange={(e) => setProgress(Number(e.target.value))}
+            onMouseDown={() => setIsDragging(true)}
+            onTouchStart={() => setIsDragging(true)}
+            onMouseUp={(e) => {
+              setIsDragging(false);
+              handleSeek(Number((e.target as HTMLInputElement).value));
+            }}
+            onTouchEnd={(e) => {
+              setIsDragging(false);
+              handleSeek(Number((e.target as HTMLInputElement).value));
+            }}
+            className="flex-1 h-1.5 accent-primary cursor-pointer"
+            title="拖动到任意位置反复听"
+          />
+
+          <span className="text-xs text-gray-400 font-mono shrink-0 w-12 text-right">
+            {Math.round((progress / Math.max(totalLength, 1)) * 100)}%
+          </span>
+        </div>
       </div>
 
       {!isSubmitted ? (
