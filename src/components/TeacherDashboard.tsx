@@ -18,7 +18,8 @@ import {
   Save,
   ClipboardList,
   CheckCircle2,
-  Trash2
+  Trash2,
+  RefreshCw
 } from 'lucide-react';
 import {
   LineChart,
@@ -120,6 +121,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   // 作业相关状态
   interface LibraryMaterial { id: string; title: string; difficulty_level: string; category: string; word_count: number; }
   interface ClassAssignment { id: string; class_name: string; material_id: string; material_title: string; due_date: string | null; is_active: boolean; created_at: string; }
+  interface AssignmentSubmission { id: string; student_name: string; student_number: string | null; submitted_at: string; accuracy_rate: number | null; }
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [assignClass, setAssignClass] = useState('');
   const [assignMaterialId, setAssignMaterialId] = useState('');
@@ -129,7 +131,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [libraryMaterials, setLibraryMaterials] = useState<LibraryMaterial[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [activeAssignments, setActiveAssignments] = useState<ClassAssignment[]>([]);
+  const [assignmentHistory, setAssignmentHistory] = useState<ClassAssignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [showAssignmentHistory, setShowAssignmentHistory] = useState(false);
+  // 提交名单：assignmentId → 提交列表
+  const [assignmentSubmissions, setAssignmentSubmissions] = useState<Record<string, AssignmentSubmission[]>>({});
+  const [submissionsLoading, setSubmissionsLoading] = useState<Record<string, boolean>>({});
+  const [expandedAssignmentId, setExpandedAssignmentId] = useState<string | null>(null);
   
   // 编辑学生信息的状态
   const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
@@ -354,9 +362,25 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
         is_active: true,
       });
       if (error) {
-        const msg = String(error.message || '');
-        if (msg.includes('class_assignments') || msg.includes('does not exist')) {
+        const msg = String(error.message || '').toLowerCase();
+        const code = String((error as any).code || '');
+        const isTableMissing =
+          code === '42P01' ||
+          msg.includes('relation "class_assignments" does not exist') ||
+          msg.includes("relation 'class_assignments' does not exist") ||
+          msg.includes('does not exist');
+        const isPermissionError =
+          code === '42501' ||
+          msg.includes('permission denied') ||
+          msg.includes('row-level security') ||
+          msg.includes('violates row-level security policy');
+
+        if (isTableMissing) {
           alert('请先在 Supabase 中执行 create_class_assignments_table.sql 初始化作业表');
+          return;
+        }
+        if (isPermissionError) {
+          alert('class_assignments 表存在，但当前账号没有写入权限（RLS/Policy）。请在 Supabase 给该表加 INSERT/SELECT/UPDATE 策略。');
           return;
         }
         throw error;
@@ -369,23 +393,74 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     } finally { setAssignSaving(false); }
   };
 
-  // 加载当前生效的作业（用于班级 tab 展示）
+  // 加载作业：当前生效 + 历史
   const loadActiveAssignments = async () => {
     setAssignmentsLoading(true);
     try {
       const { data, error } = await supabase
         .from('class_assignments')
         .select('*')
-        .eq('is_active', true)
         .order('created_at', { ascending: false });
       if (error) {
-        const msg = String(error.message || '');
-        if (msg.includes('class_assignments') || msg.includes('does not exist')) return;
+        const msg = String(error.message || '').toLowerCase();
+        const code = String((error as any).code || '');
+        const isTableMissing =
+          code === '42P01' ||
+          msg.includes('relation "class_assignments" does not exist') ||
+          msg.includes("relation 'class_assignments' does not exist") ||
+          msg.includes('does not exist');
+        if (isTableMissing) return;
         throw error;
       }
-      setActiveAssignments(data || []);
+      const list = (data || []) as ClassAssignment[];
+      const today = new Date().toISOString().split('T')[0];
+      const active = list.filter((a) => a.is_active && (!a.due_date || a.due_date >= today));
+      const history = list.filter((a) => !a.is_active || Boolean(a.due_date && a.due_date < today));
+      setActiveAssignments(active);
+      setAssignmentHistory(history);
     } catch (e) { console.error(e); }
     finally { setAssignmentsLoading(false); }
+  };
+
+  // 加载某条作业的提交名单
+  const loadSubmissions = async (assignmentId: string) => {
+    if (assignmentSubmissions[assignmentId]) {
+      // 已加载过，切换展开/收起
+      setExpandedAssignmentId(prev => prev === assignmentId ? null : assignmentId);
+      return;
+    }
+    setSubmissionsLoading(prev => ({ ...prev, [assignmentId]: true }));
+    setExpandedAssignmentId(assignmentId);
+    try {
+      const { data, error } = await supabase
+        .from('assignment_submissions')
+        .select('id, student_name, student_number, submitted_at, accuracy_rate')
+        .eq('assignment_id', assignmentId)
+        .order('submitted_at', { ascending: false });
+      if (error) {
+        const msg = String(error.message || '');
+        if (msg.includes('does not exist') || msg.includes('permission denied') || msg.includes('row-level security')) {
+          setAssignmentSubmissions(prev => ({ ...prev, [assignmentId]: [] }));
+          return;
+        }
+        throw error;
+      }
+      setAssignmentSubmissions(prev => ({ ...prev, [assignmentId]: (data || []) as AssignmentSubmission[] }));
+    } catch (e) {
+      console.error('加载提交名单失败', e);
+    } finally {
+      setSubmissionsLoading(prev => ({ ...prev, [assignmentId]: false }));
+    }
+  };
+
+  // 强制刷新某条作业的提交名单
+  const refreshSubmissions = async (assignmentId: string) => {
+    setAssignmentSubmissions(prev => {
+      const next = { ...prev };
+      delete next[assignmentId];
+      return next;
+    });
+    await loadSubmissions(assignmentId);
   };
 
   // 下架作业
@@ -393,6 +468,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     if (!confirm('确认下架这条作业？学生将不再看到它。')) return;
     await supabase.from('class_assignments').update({ is_active: false }).eq('id', id);
     setActiveAssignments(prev => prev.filter(a => a.id !== id));
+    void loadActiveAssignments();
+  };
+
+  // 重新激活历史作业
+  const reactivateAssignment = async (id: string) => {
+    await supabase.from('class_assignments').update({ is_active: true }).eq('id', id);
+    void loadActiveAssignments();
   };
 
   // 加载各班错因分布（聚合 error_summary by_subtype）
@@ -1098,28 +1180,163 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
               ) : activeAssignments.length === 0 ? (
                 <p className="text-sm text-slate-400">暂无生效作业，点击"布置新作业"开始。</p>
               ) : (
-                <div className="space-y-2">
-                  {activeAssignments.map(a => (
-                    <div key={a.id} className="flex items-center justify-between bg-emerald-50 border border-emerald-100 rounded-lg px-4 py-3">
-                      <div>
-                        <p className="text-sm font-semibold text-emerald-900">{a.class_name}</p>
-                        <p className="text-xs text-emerald-700 mt-0.5">
-                          📖 {a.material_title}
-                          {a.due_date && <span className="ml-2 text-slate-500">截止：{a.due_date}</span>}
-                        </p>
-                        <p className="text-xs text-slate-400 mt-0.5">布置于 {new Date(a.created_at).toLocaleDateString('zh-CN')}</p>
+                <div className="space-y-3">
+                  {activeAssignments.map(a => {
+                    const subs = assignmentSubmissions[a.id] || [];
+                    const isExpanded = expandedAssignmentId === a.id;
+                    const isLoadingSubs = submissionsLoading[a.id];
+                    const classStudentCount = classes.find(c => c.class_name === a.class_name)?.student_count ?? '?';
+                    const submittedCount = assignmentSubmissions[a.id] !== undefined ? subs.length : null;
+                    return (
+                      <div key={a.id} className="bg-emerald-50 border border-emerald-100 rounded-xl overflow-hidden">
+                        {/* 作业主信息行 */}
+                        <div className="flex items-center justify-between px-4 py-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-sm font-semibold text-emerald-900">{a.class_name}</p>
+                              {submittedCount !== null && (
+                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                                  submittedCount === 0 ? 'bg-slate-100 text-slate-500'
+                                  : submittedCount >= Number(classStudentCount) ? 'bg-emerald-600 text-white'
+                                  : 'bg-amber-100 text-amber-700'
+                                }`}>
+                                  {submittedCount}/{classStudentCount} 已完成
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-emerald-700 mt-0.5">
+                              📖 {a.material_title}
+                              {a.due_date && <span className="ml-2 text-slate-500">截止：{a.due_date}</span>}
+                            </p>
+                            <p className="text-xs text-slate-400 mt-0.5">布置于 {new Date(a.created_at).toLocaleDateString('zh-CN')}</p>
+                          </div>
+                          <div className="flex items-center gap-1 ml-2 shrink-0">
+                            <button
+                              onClick={() => void loadSubmissions(a.id)}
+                              className={`px-2.5 py-1.5 text-xs rounded-lg border transition-colors flex items-center gap-1 ${
+                                isExpanded
+                                  ? 'bg-emerald-600 text-white border-emerald-600'
+                                  : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                              title="查看完成名单"
+                            >
+                              {isLoadingSubs ? (
+                                <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin inline-block" />
+                              ) : (
+                                <Users className="w-3 h-3" />
+                              )}
+                              {isExpanded ? '收起' : '名单'}
+                            </button>
+                            <button
+                              onClick={() => void deactivateAssignment(a.id)}
+                              className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                              title="下架作业"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* 展开：提交名单 */}
+                        {isExpanded && (
+                          <div className="border-t border-emerald-100 bg-white px-4 py-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <p className="text-xs font-semibold text-slate-600">
+                                已提交名单（{subs.length} 人）
+                              </p>
+                              <button
+                                onClick={() => void refreshSubmissions(a.id)}
+                                className="text-xs text-emerald-600 hover:text-emerald-800 flex items-center gap-1"
+                              >
+                                <RefreshCw className="w-3 h-3" /> 刷新
+                              </button>
+                            </div>
+                            {isLoadingSubs ? (
+                              <p className="text-xs text-slate-400 py-2">加载中...</p>
+                            ) : subs.length === 0 ? (
+                              <p className="text-xs text-slate-400 py-2">暂无学生提交</p>
+                            ) : (
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="text-slate-500 border-b border-slate-100">
+                                      <th className="text-left py-1.5 pr-4 font-medium">姓名</th>
+                                      <th className="text-left py-1.5 pr-4 font-medium">学号</th>
+                                      <th className="text-left py-1.5 pr-4 font-medium">正确率</th>
+                                      <th className="text-left py-1.5 font-medium">提交时间</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {subs.map(s => (
+                                      <tr key={s.id} className="border-b border-slate-50 hover:bg-slate-50">
+                                        <td className="py-1.5 pr-4 font-medium text-slate-800">{s.student_name}</td>
+                                        <td className="py-1.5 pr-4 text-slate-500">{s.student_number || '—'}</td>
+                                        <td className="py-1.5 pr-4">
+                                          {s.accuracy_rate != null ? (
+                                            <span className={`font-semibold ${
+                                              s.accuracy_rate >= 90 ? 'text-emerald-600'
+                                              : s.accuracy_rate >= 70 ? 'text-amber-600'
+                                              : 'text-red-500'
+                                            }`}>
+                                              {s.accuracy_rate}%
+                                            </span>
+                                          ) : '—'}
+                                        </td>
+                                        <td className="py-1.5 text-slate-400">
+                                          {new Date(s.submitted_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <button
-                        onClick={() => void deactivateAssignment(a.id)}
-                        className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                        title="下架作业"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
+
+              {/* 历史作业 */}
+              <div className="mt-5 pt-4 border-t border-slate-100">
+                <button
+                  onClick={() => setShowAssignmentHistory((v) => !v)}
+                  className="w-full flex items-center justify-between text-sm font-semibold text-slate-700 hover:text-slate-900"
+                >
+                  <span>历史作业（已下架/已过期）</span>
+                  {showAssignmentHistory ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+
+                {showAssignmentHistory && (
+                  <div className="mt-3 space-y-2">
+                    {assignmentHistory.length === 0 ? (
+                      <p className="text-xs text-slate-400">暂无历史作业</p>
+                    ) : (
+                      assignmentHistory.map((a) => (
+                        <div key={a.id} className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-800">{a.class_name}</p>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              📖 {a.material_title}
+                              {a.due_date && <span className="ml-2">截止：{a.due_date}</span>}
+                            </p>
+                            <p className="text-xs text-slate-400 mt-0.5">布置于 {new Date(a.created_at).toLocaleDateString('zh-CN')}</p>
+                          </div>
+                          <button
+                            onClick={() => void reactivateAssignment(a.id)}
+                            className="px-2.5 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                            title="重新生效"
+                          >
+                            重新激活
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}

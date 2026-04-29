@@ -10,6 +10,7 @@ import { LibraryScreen, DictationMaterial } from './components/LibraryScreen';
 import { saveRecord } from './utils/historyManager';
 import { registerStudent } from './utils/studentManager';
 import { createSuggestionTask, savePendingSuggestionTaskLocal, syncSuggestionTaskToSupabase } from './utils/suggestionTaskManager';
+import { upsertAssignmentSubmission } from './utils/assignmentSubmissionManager';
 
 type AppMode = 'setup' | 'practice' | 'results' | 'history' | 'review' | 'teacher' | 'library';
 const LATEST_RESULTS_KEY = 'latest_results_report_v1';
@@ -78,6 +79,8 @@ function App() {
     studentNumber: string;
     className: string;
     inputMethod: 'text' | 'voice' | 'image';
+    assignmentId?: string;
+    assignmentTitle?: string;
   } | null>(null);
 
   // Navigate to a new mode, pushing a history entry
@@ -111,7 +114,14 @@ function App() {
 
   const handleStart = (
     text: string,
-    metadata?: { studentName: string; studentNumber: string; className: string; inputMethod: 'text' | 'voice' | 'image' }
+    metadata?: {
+      studentName: string;
+      studentNumber: string;
+      className: string;
+      inputMethod: 'text' | 'voice' | 'image';
+      assignmentId?: string;
+      assignmentTitle?: string;
+    }
   ) => {
     setRawText(text);
     if (metadata) {
@@ -144,6 +154,16 @@ function App() {
         });
         savePendingSuggestionTaskLocal(task);
         void syncSuggestionTaskToSupabase(task);
+      }
+      if (studentMetadata?.assignmentId && studentMetadata.studentName && studentMetadata.className) {
+        void upsertAssignmentSubmission({
+          assignmentId: studentMetadata.assignmentId,
+          className: studentMetadata.className,
+          studentName: studentMetadata.studentName,
+          studentNumber: studentMetadata.studentNumber,
+          rawText,
+          results: res,
+        });
       }
     }
     navigateTo('results');

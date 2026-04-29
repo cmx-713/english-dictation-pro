@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FileText, ArrowRight, Loader2, Mic, Camera, Image, Book, ClipboardList } from 'lucide-react';
 import { StudentInfo } from './StudentInfo';
 import { getPendingSuggestionTaskLocal, updatePendingSuggestionTaskStatusLocal, syncSuggestionTaskStatusToSupabase } from '../utils/suggestionTaskManager';
@@ -9,7 +9,14 @@ import Tesseract from 'tesseract.js';
 interface SetupScreenProps {
   initialText?: string;
   onOpenLibrary: () => void;
-  onStart: (text: string, metadata?: { studentName: string; studentNumber: string; className: string; inputMethod: 'text' | 'voice' | 'image' }) => void;
+  onStart: (text: string, metadata?: {
+    studentName: string;
+    studentNumber: string;
+    className: string;
+    inputMethod: 'text' | 'voice' | 'image';
+    assignmentId?: string;
+    assignmentTitle?: string;
+  }) => void;
   hasLatestReport?: boolean;
   latestReportAt?: string;
   onViewLatestReport?: () => void;
@@ -40,16 +47,25 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
 
   // 班级作业
   interface ClassAssignment { id: string; class_name: string; material_id: string; material_title: string; due_date: string | null; }
+  interface AssignmentSubmissionStatus { submittedAt: string; accuracyRate: number | null; }
   const [classAssignment, setClassAssignment] = useState<ClassAssignment | null>(null);
+  const [assignmentStatus, setAssignmentStatus] = useState<AssignmentSubmissionStatus | null>(null);
   const [assignmentLoading, setAssignmentLoading] = useState(false);
   const [startingAssignment, setStartingAssignment] = useState(false);
+  const lastCheckedClassRef = useRef('');
 
-  const handleStudentInfoChange = (name: string, number: string, classN: string) => {
+  // 每次组件挂载（从练习页返回时）都强制重新检查作业状态
+  useEffect(() => {
+    lastCheckedClassRef.current = '';
+    setAssignmentStatus(null);
+    setClassAssignment(null);
+  }, []);
+
+  const handleStudentInfoChange = useCallback((name: string, number: string, classN: string) => {
     setStudentName(name);
     setStudentNumber(number);
     setClassName(classN);
-    if (classN) void loadClassAssignment(classN);
-  };
+  }, []);
 
   const loadClassAssignment = async (cls: string) => {
     setAssignmentLoading(true);
@@ -64,12 +80,55 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (!error && data) setClassAssignment(data);
-      else setClassAssignment(null);
+      if (!error && data) {
+        setClassAssignment(data);
+        if (studentName.trim()) {
+          const { data: submitted } = await supabase
+            .from('assignment_submissions')
+            .select('submitted_at, accuracy_rate')
+            .eq('assignment_id', data.id)
+            .eq('student_name', studentName.trim())
+            .maybeSingle();
+          if (submitted) {
+            setAssignmentStatus({
+              submittedAt: submitted.submitted_at,
+              accuracyRate: submitted.accuracy_rate,
+            });
+          } else {
+            setAssignmentStatus(null);
+          }
+        } else {
+          setAssignmentStatus(null);
+        }
+      } else {
+        setClassAssignment(null);
+        setAssignmentStatus(null);
+      }
     } catch {
       setClassAssignment(null);
+      setAssignmentStatus(null);
     } finally { setAssignmentLoading(false); }
   };
+
+  // 班级变化时再检查作业，避免重复轮询导致“一直检查中”
+  useEffect(() => {
+    const normalizedClass = className.trim();
+    const normalizedStudent = studentName.trim();
+    const checkKey = `${normalizedClass}__${normalizedStudent}`;
+
+    if (!normalizedClass) {
+      setAssignmentLoading(false);
+      setClassAssignment(null);
+      setAssignmentStatus(null);
+      lastCheckedClassRef.current = '';
+      return;
+    }
+
+    // 同一“班级+学生”不重复查
+    if (lastCheckedClassRef.current === checkKey) return;
+    lastCheckedClassRef.current = checkKey;
+    void loadClassAssignment(normalizedClass);
+  }, [className, studentName]);
 
   const handleStartAssignment = async () => {
     if (!classAssignment) return;
@@ -82,7 +141,14 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
         .single();
       if (error || !data?.content) { alert('加载素材失败，请稍后重试'); return; }
       if (!studentName.trim() || !studentNumber.trim()) { alert('请先填写学生信息'); return; }
-      onStart(data.content, { studentName, studentNumber, className, inputMethod: 'text' });
+      onStart(data.content, {
+        studentName,
+        studentNumber,
+        className,
+        inputMethod: 'text',
+        assignmentId: classAssignment.id,
+        assignmentTitle: classAssignment.material_title,
+      });
     } catch { alert('加载素材失败'); }
     finally { setStartingAssignment(false); }
   };
@@ -244,6 +310,17 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
                 {classAssignment.due_date && (
                   <p className="text-xs text-emerald-600 mt-0.5">截止日期：{classAssignment.due_date}</p>
                 )}
+                {assignmentStatus && (
+                  <p className="text-xs text-emerald-700 mt-1">
+                    ✅ 你已提交：{new Date(assignmentStatus.submittedAt).toLocaleString('zh-CN', {
+                      month: '2-digit',
+                      day: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                    {assignmentStatus.accuracyRate != null ? ` · 正确率 ${Math.round(Number(assignmentStatus.accuracyRate))}%` : ''}
+                  </p>
+                )}
               </div>
             </div>
             <button
@@ -251,7 +328,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
               disabled={startingAssignment}
               className="w-full mt-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {startingAssignment ? <><Loader2 className="w-4 h-4 animate-spin" />加载中...</> : <><ArrowRight className="w-4 h-4" />立即完成作业</>}
+              {startingAssignment ? <><Loader2 className="w-4 h-4 animate-spin" />加载中...</> : <><ArrowRight className="w-4 h-4" />{assignmentStatus ? '再次练习该作业' : '立即完成作业'}</>}
             </button>
           </div>
         )}
