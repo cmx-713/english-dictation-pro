@@ -109,6 +109,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     total: 0, done: 0, dismissed: 0, pending: 0,
     byClass: [], topStudents: [], loading: false, unsupported: false,
   });
+
+  // 班级错因分布：class_name → { A, B, C, D, total }
+  const [classErrorProfiles, setClassErrorProfiles] = useState<Record<string, { A: number; B: number; C: number; D: number; total: number }>>({});
+  const [classErrorLoading, setClassErrorLoading] = useState(false);
   
   // 编辑学生信息的状态
   const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
@@ -297,6 +301,46 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     }
   };
 
+  // 加载各班错因分布（聚合 error_summary by_subtype）
+  const loadClassErrorProfiles = async () => {
+    setClassErrorLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('practice_records')
+        .select('class_name, error_summary')
+        .not('class_name', 'is', null)
+        .not('error_summary', 'is', null);
+
+      if (error) {
+        // 若 error_summary 列不存在则静默忽略
+        const msg = String(error.message || '');
+        if (msg.includes('error_summary') || msg.includes('does not exist')) return;
+        throw error;
+      }
+
+      const profiles: Record<string, { A: number; B: number; C: number; D: number; total: number }> = {};
+
+      (data || []).forEach((row: { class_name: string | null; error_summary: { by_subtype?: Record<string, number> } | null }) => {
+        const cls = row.class_name || '未知班级';
+        if (!profiles[cls]) profiles[cls] = { A: 0, B: 0, C: 0, D: 0, total: 0 };
+        const bySubtype = row.error_summary?.by_subtype || {};
+        Object.entries(bySubtype).forEach(([key, cnt]) => {
+          const cat = key[0] as 'A' | 'B' | 'C' | 'D';
+          if (['A', 'B', 'C', 'D'].includes(cat)) {
+            profiles[cls][cat] += Number(cnt) || 0;
+            profiles[cls].total += Number(cnt) || 0;
+          }
+        });
+      });
+
+      setClassErrorProfiles(profiles);
+    } catch (e) {
+      console.error('加载班级错因分布失败:', e);
+    } finally {
+      setClassErrorLoading(false);
+    }
+  };
+
   // 展开/收起学生详情
   const toggleStudent = async (studentName: string) => {
     if (expandedStudent === studentName) {
@@ -427,6 +471,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                   setActiveTab(tab.key as any);
                   if (tab.key === 'suggestions' && suggestionStats.total === 0 && !suggestionStats.loading && !suggestionStats.unsupported) {
                     void loadSuggestionStats();
+                  }
+                  if (tab.key === 'classes' && Object.keys(classErrorProfiles).length === 0 && !classErrorLoading) {
+                    void loadClassErrorProfiles();
                   }
                 }}
                 className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-colors ${activeTab === tab.key
@@ -847,6 +894,80 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                     </p>
                   </div>
                 </div>
+
+                {/* 错因热力条 */}
+                {(() => {
+                  const profile = classErrorProfiles[classItem.class_name];
+                  if (classErrorLoading) {
+                    return (
+                      <div className="mt-4 pt-4 border-t border-slate-100 text-xs text-slate-400">正在加载错因分布...</div>
+                    );
+                  }
+                  if (!profile || profile.total === 0) {
+                    return (
+                      <div className="mt-4 pt-4 border-t border-slate-100 text-xs text-slate-400">
+                        暂无错因数据（需学生练习后写入 error_summary 才可显示）
+                      </div>
+                    );
+                  }
+                  const categories = [
+                    { key: 'A', label: '漏词', color: 'bg-orange-400', light: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+                    { key: 'B', label: '辨音', color: 'bg-blue-400',   light: 'bg-blue-50',   text: 'text-blue-700',   border: 'border-blue-200' },
+                    { key: 'C', label: '拼写', color: 'bg-rose-400',   light: 'bg-rose-50',   text: 'text-rose-700',   border: 'border-rose-200' },
+                    { key: 'D', label: '语法', color: 'bg-violet-400', light: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200' },
+                  ] as const;
+                  const maxCnt = Math.max(...categories.map(c => profile[c.key]));
+                  return (
+                    <div className="mt-4 pt-4 border-t border-slate-100">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs font-semibold text-slate-600">错因分布热力图</p>
+                        <p className="text-xs text-slate-400">共 {profile.total} 个错误</p>
+                      </div>
+                      {/* 堆叠横条 */}
+                      <div className="flex h-5 rounded-full overflow-hidden mb-3">
+                        {categories.map(c => {
+                          const pct = profile.total > 0 ? (profile[c.key] / profile.total) * 100 : 0;
+                          return pct > 0 ? (
+                            <div
+                              key={c.key}
+                              className={`${c.color} transition-all`}
+                              style={{ width: `${pct}%` }}
+                              title={`${c.label}：${profile[c.key]} (${Math.round(pct)}%)`}
+                            />
+                          ) : null;
+                        })}
+                      </div>
+                      {/* 各类指标 */}
+                      <div className="grid grid-cols-4 gap-2">
+                        {categories.map(c => {
+                          const cnt = profile[c.key];
+                          const pct = profile.total > 0 ? Math.round((cnt / profile.total) * 100) : 0;
+                          const intensity = maxCnt > 0 ? cnt / maxCnt : 0;
+                          return (
+                            <div
+                              key={c.key}
+                              className={`rounded-lg border ${c.border} ${c.light} p-2 text-center`}
+                              style={{ opacity: cnt === 0 ? 0.4 : 0.5 + intensity * 0.5 }}
+                            >
+                              <p className={`text-xs font-bold ${c.text}`}>{c.label}</p>
+                              <p className={`text-lg font-extrabold ${c.text}`}>{cnt}</p>
+                              <p className={`text-xs ${c.text} opacity-75`}>{pct}%</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {/* 主要弱项提示 */}
+                      {maxCnt > 0 && (() => {
+                        const top = categories.reduce((a, b) => profile[a.key] >= profile[b.key] ? a : b);
+                        return (
+                          <p className={`mt-2 text-xs font-medium ${top.text}`}>
+                            ⚠ 该班主要弱项：{top.label}类（占 {Math.round((profile[top.key] / profile.total) * 100)}%），建议课堂重点讲解。
+                          </p>
+                        );
+                      })()}
+                    </div>
+                  );
+                })()}
               </div>
             ))}
 

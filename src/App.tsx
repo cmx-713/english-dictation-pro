@@ -199,6 +199,7 @@ function App() {
                 setRawText(material.content);
                 navigateTo('setup');
               }}
+              studentMetadata={studentMetadata}
             />
           )}
 
