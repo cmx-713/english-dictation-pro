@@ -1,6 +1,7 @@
 import { SentenceResult } from '../components/PracticeScreen';
 import { supabase } from '../lib/supabase';
 import { normalizeClassName } from './classNameNormalizer';
+import { analyzeErrors } from './errorAnalysis';
 
 // 必须和 HistoryScreen.tsx 里的 key 保持完全一致
 const STORAGE_KEY = 'dictation_records';
@@ -11,6 +12,36 @@ export interface HistoryRecord {
   rawText: string;
   results: SentenceResult[];
 }
+
+interface ErrorSummaryPayload {
+  total_errors: number;
+  by_category: Record<string, number>;
+  by_subtype: Record<string, number>;
+  generated_at: string;
+}
+
+const buildErrorSummary = (results: SentenceResult[]): ErrorSummaryPayload => {
+  const stats = analyzeErrors(results);
+  const byCategory: Record<string, number> = {};
+  const bySubtype: Record<string, number> = {};
+
+  Object.entries(stats).forEach(([categoryKey, categoryValue]) => {
+    byCategory[categoryKey] = categoryValue.total;
+    Object.entries(categoryValue.subtypes).forEach(([subtypeKey, subtypeValue]) => {
+      const typedSubtype = subtypeValue as { count: number };
+      bySubtype[subtypeKey] = typedSubtype.count;
+    });
+  });
+
+  const totalErrors = Object.values(bySubtype).reduce((sum, count) => sum + count, 0);
+
+  return {
+    total_errors: totalErrors,
+    by_category: byCategory,
+    by_subtype: bySubtype,
+    generated_at: new Date().toISOString(),
+  };
+};
 
 export const saveRecord = (
   rawText: string,
@@ -125,9 +156,21 @@ export const saveRecord = (
 
         // 输入方式
         input_method: metadata?.inputMethod || 'text',
+
+        // Step B: 结构化错误信号（用于后续闭环推荐）
+        error_summary: buildErrorSummary(results),
       };
 
-      const { error } = await supabase.from('practice_records').insert(cloudRecord);
+      let { error } = await supabase.from('practice_records').insert(cloudRecord);
+
+      // 兼容旧库：若尚未加 error_summary 字段，则自动降级为旧写法，不影响原功能
+      if (error && String(error.message || '').includes('error_summary')) {
+        const legacyRecord = { ...cloudRecord } as Record<string, unknown>;
+        delete legacyRecord.error_summary;
+        const legacyInsert = await supabase.from('practice_records').insert(legacyRecord);
+        error = legacyInsert.error;
+      }
+
       if (error) {
         console.error('同步到云端失败:', error);
         console.log('失败的记录:', cloudRecord);
