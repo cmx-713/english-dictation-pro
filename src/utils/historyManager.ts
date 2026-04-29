@@ -1,5 +1,6 @@
 import { SentenceResult } from '../components/PracticeScreen';
 import { supabase } from '../lib/supabase';
+import { normalizeClassName } from './classNameNormalizer';
 
 // 必须和 HistoryScreen.tsx 里的 key 保持完全一致
 const STORAGE_KEY = 'dictation_records';
@@ -76,6 +77,9 @@ export const saveRecord = (
     // 先尝试更新/插入学生信息
     const updateStudentAndRecord = async () => {
       let studentId = null;
+      
+      // 标准化班级名称
+      const normalizedClassName = normalizeClassName(metadata?.className || '');
 
       if (metadata?.studentNumber && metadata?.studentName) {
         try {
@@ -84,7 +88,7 @@ export const saveRecord = (
             .upsert({
               student_number: metadata.studentNumber,
               student_name: metadata.studentName,
-              class_name: metadata.className,
+              class_name: normalizedClassName,
               last_practice_at: new Date().toISOString(),
               total_practices: 1 // This is naive, ideally we increment, but upsert simple is fine for now
             }, { onConflict: 'student_number' })
@@ -104,7 +108,7 @@ export const saveRecord = (
       const cloudRecord = {
         // 学生信息
         student_name: metadata?.studentName || null,
-        class_name: metadata?.className || null,
+        class_name: normalizedClassName || null,
         student_id: studentId, // 关联 ID
 
         // 练习内容

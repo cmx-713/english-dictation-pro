@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { normalizeClassName } from '../utils/classNameNormalizer';
 import {
   ArrowLeft,
   Users,
@@ -11,7 +12,10 @@ import {
   RefreshCcw,
   ChevronDown,
   ChevronUp,
-  BarChart3
+  BarChart3,
+  Edit2,
+  X,
+  Save
 } from 'lucide-react';
 import {
   LineChart,
@@ -80,6 +84,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [selectedClass, setSelectedClass] = useState<string>('全部');
   const [expandedStudent, setExpandedStudent] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'classes' | 'trends'>('overview');
+  
+  // 编辑学生信息的状态
+  const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
+  const [editClassName, setEditClassName] = useState('');
+  const [saving, setSaving] = useState(false);
+  
+  // 学生详细练习记录
+  const [studentRecords, setStudentRecords] = useState<any[]>([]);
+  const [loadingRecords, setLoadingRecords] = useState(false);
 
   // 加载所有数据
   const fetchData = async () => {
@@ -134,6 +147,87 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   useEffect(() => {
     fetchData();
   }, []);
+
+  // 更新学生班级
+  const updateStudentClass = async () => {
+    if (!editingStudent || !editClassName.trim()) {
+      alert('请输入班级名称');
+      return;
+    }
+
+    // 标准化班级名称
+    const normalizedClassName = normalizeClassName(editClassName.trim());
+
+    setSaving(true);
+    try {
+      // 1. 更新 practice_records 表中该学生的所有记录
+      const { error: recordsError } = await supabase
+        .from('practice_records')
+        .update({ class_name: normalizedClassName })
+        .eq('student_name', editingStudent.student_name);
+
+      if (recordsError) throw recordsError;
+
+      // 2. 更新 students 表
+      const { error: studentsError } = await supabase
+        .from('students')
+        .update({ class_name: normalizedClassName })
+        .eq('student_name', editingStudent.student_name);
+
+      if (studentsError) throw studentsError;
+
+      // 3. 刷新数据
+      await fetchData();
+      
+      // 4. 关闭对话框
+      setEditingStudent(null);
+      setEditClassName('');
+      
+      alert(`班级更新成功！\n已将 "${editingStudent.student_name}" 的 ${editingStudent.total_practices} 条记录更新为班级 "${normalizedClassName}"`);
+    } catch (err: any) {
+      console.error('更新班级失败:', err);
+      alert('更新失败: ' + err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // 打开编辑对话框
+  const handleEditStudent = (student: StudentSummary) => {
+    setEditingStudent(student);
+    setEditClassName(student.class_name || '');
+  };
+
+  // 加载学生的详细练习记录
+  const loadStudentRecords = async (studentName: string) => {
+    setLoadingRecords(true);
+    try {
+      const { data, error } = await supabase
+        .from('practice_records')
+        .select('*')
+        .eq('student_name', studentName)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setStudentRecords(data || []);
+    } catch (err) {
+      console.error('加载学生记录失败:', err);
+      setStudentRecords([]);
+    } finally {
+      setLoadingRecords(false);
+    }
+  };
+
+  // 展开/收起学生详情
+  const toggleStudent = async (studentName: string) => {
+    if (expandedStudent === studentName) {
+      setExpandedStudent(null);
+      setStudentRecords([]);
+    } else {
+      setExpandedStudent(studentName);
+      await loadStudentRecords(studentName);
+    }
+  };
 
   // 导出数据为 CSV
   const exportToCSV = () => {
@@ -429,9 +523,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                 >
                   <div
                     className="p-4 cursor-pointer"
-                    onClick={() => setExpandedStudent(
-                      expandedStudent === student.student_name ? null : student.student_name
-                    )}
+                    onClick={() => toggleStudent(student.student_name)}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4 flex-1">
@@ -453,6 +545,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                                 {student.class_name}
                               </span>
                             )}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEditStudent(student);
+                              }}
+                              className="ml-2 p-1 hover:bg-slate-100 rounded transition-colors"
+                              title="编辑班级"
+                            >
+                              <Edit2 className="w-4 h-4 text-slate-400 hover:text-blue-600" />
+                            </button>
                           </div>
                           <p className="text-sm text-slate-500 mt-1">
                             练习 {student.total_practices} 次 ·
@@ -479,8 +581,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
 
                   {/* 展开的详细信息 */}
                   {expandedStudent === student.student_name && (
-                    <div className="border-t border-slate-200 bg-slate-50 p-4">
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="border-t border-slate-200 bg-slate-50">
+                      {/* 统计摘要 */}
+                      <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4 border-b border-slate-200">
                         <div>
                           <p className="text-xs text-slate-500 mb-1">最高正确率</p>
                           <p className="text-lg font-semibold text-green-600">
@@ -505,6 +608,99 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                             {new Date(student.last_practice_date).toLocaleDateString('zh-CN')}
                           </p>
                         </div>
+                      </div>
+
+                      {/* 详细练习记录 */}
+                      <div className="p-4">
+                        <h4 className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                          <BookOpen className="w-4 h-4" />
+                          练习记录详情
+                        </h4>
+                        
+                        {loadingRecords ? (
+                          <div className="text-center py-8">
+                            <RefreshCcw className="w-6 h-6 animate-spin text-blue-600 mx-auto mb-2" />
+                            <p className="text-sm text-slate-500">加载中...</p>
+                          </div>
+                        ) : studentRecords.length === 0 ? (
+                          <div className="text-center py-8 text-slate-500">
+                            <p className="text-sm">暂无练习记录</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-3 max-h-96 overflow-y-auto">
+                            {studentRecords.map((record, idx) => (
+                              <div
+                                key={record.id}
+                                className="bg-white rounded-lg p-4 border border-slate-200 hover:border-blue-300 transition-colors"
+                              >
+                                <div className="flex items-start justify-between mb-3">
+                                  <div className="flex items-center gap-3">
+                                    <div className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-700 font-bold text-sm">
+                                      {idx + 1}
+                                    </div>
+                                    <div>
+                                      <p className="text-sm font-medium text-slate-900">
+                                        {new Date(record.created_at).toLocaleString('zh-CN', {
+                                          year: 'numeric',
+                                          month: '2-digit',
+                                          day: '2-digit',
+                                          hour: '2-digit',
+                                          minute: '2-digit'
+                                        })}
+                                      </p>
+                                      <div className="flex items-center gap-2 mt-1">
+                                        <span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">
+                                          {record.difficulty_level || '未知难度'}
+                                        </span>
+                                        <span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">
+                                          {record.input_method === 'voice' ? '语音' : record.input_method === 'image' ? '图片' : '文本'}输入
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="text-right">
+                                    <div className={`text-2xl font-bold ${
+                                      record.accuracy_rate >= 90 ? 'text-green-600' :
+                                      record.accuracy_rate >= 70 ? 'text-blue-600' :
+                                      record.accuracy_rate >= 60 ? 'text-orange-600' :
+                                      'text-red-600'
+                                    }`}>
+                                      {record.accuracy_rate}%
+                                    </div>
+                                    <div className="text-xs text-slate-500">正确率</div>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-3 mb-3">
+                                  <div className="text-center p-2 bg-slate-50 rounded">
+                                    <p className="text-xs text-slate-500">总句子</p>
+                                    <p className="text-lg font-semibold text-slate-900">{record.total_sentences || 0}</p>
+                                  </div>
+                                  <div className="text-center p-2 bg-slate-50 rounded">
+                                    <p className="text-xs text-slate-500">完美句</p>
+                                    <p className="text-lg font-semibold text-green-600">{record.perfect_sentences || 0}</p>
+                                  </div>
+                                  <div className="text-center p-2 bg-slate-50 rounded">
+                                    <p className="text-xs text-slate-500">总单词</p>
+                                    <p className="text-lg font-semibold text-blue-600">{record.total_words || 0}</p>
+                                  </div>
+                                </div>
+
+                                {record.raw_text && (
+                                  <div className="mt-3 pt-3 border-t border-slate-200">
+                                    <p className="text-xs text-slate-500 mb-2">听写内容：</p>
+                                    <div className="text-sm text-slate-700 bg-slate-50 rounded p-3 max-h-32 overflow-y-auto">
+                                      {record.raw_text.split('\n').slice(0, 3).join('\n')}
+                                      {record.raw_text.split('\n').length > 3 && (
+                                        <span className="text-slate-400">...</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
@@ -670,6 +866,116 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
           </div>
         )}
       </div>
+
+      {/* 编辑学生班级对话框 */}
+      {editingStudent && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-bold text-slate-900">编辑学生班级</h3>
+                <button
+                  onClick={() => {
+                    setEditingStudent(null);
+                    setEditClassName('');
+                  }}
+                  className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+                  disabled={saving}
+                >
+                  <X className="w-5 h-5 text-slate-500" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    学生姓名
+                  </label>
+                  <div className="px-4 py-3 bg-slate-50 rounded-lg text-slate-900 font-medium">
+                    {editingStudent.student_name}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    当前班级
+                  </label>
+                  <div className="px-4 py-3 bg-slate-50 rounded-lg text-slate-600">
+                    {editingStudent.class_name || '(未设置)'}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    新班级名称 <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={editClassName}
+                    onChange={(e) => setEditClassName(e.target.value)}
+                    placeholder="例如：A甲2"
+                    className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
+                    autoFocus
+                    disabled={saving}
+                  />
+                  {editClassName && normalizeClassName(editClassName) !== editClassName && (
+                    <div className="mt-2 flex items-start gap-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+                      <div className="text-sm">
+                        <span className="text-blue-700">将标准化为：</span>
+                        <span className="font-semibold text-blue-900 ml-1">
+                          {normalizeClassName(editClassName)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  <p className="text-xs text-slate-500 mt-2">
+                    💡 提示：更新后会同时修改该学生的所有历史记录
+                  </p>
+                </div>
+
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
+                  <p className="font-semibold mb-1">📊 影响范围：</p>
+                  <ul className="text-xs space-y-1">
+                    <li>• 该学生的 {editingStudent.total_practices} 条练习记录</li>
+                    <li>• 学生信息表中的班级字段</li>
+                    <li>• 班级统计数据将自动更新</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <button
+                  onClick={updateStudentClass}
+                  disabled={!editClassName.trim() || saving}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 px-6 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                >
+                  {saving ? (
+                    <>
+                      <RefreshCcw className="w-4 h-4 animate-spin" />
+                      保存中...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4" />
+                      保存更改
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={() => {
+                    setEditingStudent(null);
+                    setEditClassName('');
+                  }}
+                  disabled={saving}
+                  className="px-6 py-3 border border-slate-300 rounded-lg font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

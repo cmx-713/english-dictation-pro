@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Users, Edit2, Check } from 'lucide-react';
+import { normalizeClassName } from '../utils/classNameNormalizer';
 
 interface StudentInfoProps {
   onInfoChange?: (name: string, studentNumber: string, className: string) => void;
@@ -43,18 +44,26 @@ export const StudentInfo: React.FC<StudentInfoProps> = ({ onInfoChange }) => {
       alert('请输入学号');
       return;
     }
+    if (!className) {
+      alert('请选择班级');
+      return;
+    }
+
+    // 标准化班级名称
+    const normalizedClassName = normalizeClassName(className);
 
     // 保存到 localStorage
     localStorage.setItem('student_name', studentName);
     localStorage.setItem('student_number', studentNumber);
-    localStorage.setItem('student_class', className);
+    localStorage.setItem('student_class', normalizedClassName);
 
     setIsEditing(false);
     setIsSaved(true);
+    setClassName(normalizedClassName);
 
     // 通知父组件
     if (onInfoChange) {
-      onInfoChange(studentName, studentNumber, className);
+      onInfoChange(studentName, studentNumber, normalizedClassName);
     }
   };
 
@@ -135,15 +144,24 @@ export const StudentInfo: React.FC<StudentInfoProps> = ({ onInfoChange }) => {
 
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
-            班级 <span className="text-slate-400 text-xs">(可选)</span>
+            班级 <span className="text-red-500">*</span>
           </label>
-          <input
-            type="text"
+          <select
             value={className}
             onChange={(e) => setClassName(e.target.value)}
-            placeholder="例如：A甲2"
-            className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-          />
+            className="w-full px-4 py-2.5 rounded-lg border border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all bg-white"
+          >
+            <option value="">请选择班级</option>
+            <option value="2025级A甲2">2025级A甲2</option>
+            <option value="2025级A乙2">2025级A乙2</option>
+            <option value="2024级A甲6">2024级A甲6</option>
+            <option value="2024级A乙6">2024级A乙6</option>
+          </select>
+          {className && (
+            <p className="mt-2 text-xs text-slate-500">
+              ✓ 已选择：<span className="font-medium text-slate-700">{className}</span>
+            </p>
+          )}
         </div>
 
         <button

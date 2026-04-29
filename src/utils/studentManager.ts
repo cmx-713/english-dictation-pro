@@ -1,5 +1,6 @@
 
 import { supabase } from '../lib/supabase';
+import { normalizeClassName } from './classNameNormalizer';
 
 export interface StudentProfile {
     studentName: string;
@@ -12,12 +13,16 @@ export const registerStudent = async (profile: StudentProfile): Promise<string |
 
     try {
         console.log('Registering student:', profile);
+        
+        // 标准化班级名称
+        const normalizedClassName = normalizeClassName(profile.className);
+        
         const { data, error } = await supabase
             .from('students')
             .upsert({
                 student_number: profile.studentNumber,
                 student_name: profile.studentName,
-                class_name: profile.className,
+                class_name: normalizedClassName,
                 last_practice_at: new Date().toISOString(),
                 // We handle total_practices increment separately or trigger it here? 
                 // For login, we just want to ensure they exist.
