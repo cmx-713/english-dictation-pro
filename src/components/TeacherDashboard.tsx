@@ -108,7 +108,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [error, setError] = useState<string | null>(null);
   const [selectedClass, setSelectedClass] = useState<string>('全部');
   const [expandedStudent, setExpandedStudent] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'classes' | 'trends' | 'suggestions'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'classes' | 'trends' | 'suggestions' | 'assignments'>('overview');
   const [suggestionStats, setSuggestionStats] = useState<SuggestionStats>({
     total: 0, done: 0, dismissed: 0, pending: 0,
     byClass: [], topStudents: [], loading: false, unsupported: false,
@@ -138,6 +138,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [assignmentSubmissions, setAssignmentSubmissions] = useState<Record<string, AssignmentSubmission[]>>({});
   const [submissionsLoading, setSubmissionsLoading] = useState<Record<string, boolean>>({});
   const [expandedAssignmentId, setExpandedAssignmentId] = useState<string | null>(null);
+  // 作业看板：批量加载所有作业的提交汇总
+  const [allSubmissionsLoaded, setAllSubmissionsLoaded] = useState(false);
+  const [allSubmissionsLoading, setAllSubmissionsLoading] = useState(false);
   
   // 编辑学生信息的状态
   const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
@@ -422,6 +425,38 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     finally { setAssignmentsLoading(false); }
   };
 
+  // 批量加载所有作业的提交数据（看板用）
+  const loadAllSubmissions = async (assignmentIds: string[]) => {
+    if (assignmentIds.length === 0) { setAllSubmissionsLoaded(true); return; }
+    setAllSubmissionsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('assignment_submissions')
+        .select('id, assignment_id, student_name, student_number, submitted_at, accuracy_rate')
+        .in('assignment_id', assignmentIds)
+        .order('submitted_at', { ascending: false });
+      if (error) {
+        const msg = String(error.message || '');
+        if (msg.includes('does not exist') || msg.includes('permission denied') || msg.includes('row-level security')) {
+          setAllSubmissionsLoaded(true);
+          return;
+        }
+        throw error;
+      }
+      const grouped: Record<string, AssignmentSubmission[]> = {};
+      assignmentIds.forEach(id => { grouped[id] = []; });
+      (data || []).forEach((row: AssignmentSubmission & { assignment_id: string }) => {
+        if (grouped[row.assignment_id]) grouped[row.assignment_id].push(row);
+      });
+      setAssignmentSubmissions(grouped);
+      setAllSubmissionsLoaded(true);
+    } catch (e) {
+      console.error('批量加载提交失败', e);
+    } finally {
+      setAllSubmissionsLoading(false);
+    }
+  };
+
   // 加载某条作业的提交名单
   const loadSubmissions = async (assignmentId: string) => {
     if (assignmentSubmissions[assignmentId]) {
@@ -646,7 +681,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
               { key: 'students', label: '学生', icon: Users },
               { key: 'classes', label: '班级', icon: BookOpen },
               { key: 'trends', label: '趋势', icon: TrendingUp },
-              { key: 'suggestions', label: '建议执行率', icon: Award }
+              { key: 'suggestions', label: '建议执行率', icon: Award },
+              { key: 'assignments', label: '作业看板', icon: ClipboardList }
             ].map(tab => (
               <button
                 key={tab.key}
@@ -657,6 +693,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                   }
                   if (tab.key === 'classes' && Object.keys(classErrorProfiles).length === 0 && !classErrorLoading) {
                     void loadClassErrorProfiles();
+                  }
+                  if (tab.key === 'assignments' && !allSubmissionsLoaded && !allSubmissionsLoading) {
+                    const allIds = [...activeAssignments, ...assignmentHistory].map(a => a.id);
+                    void loadAllSubmissions(allIds);
                   }
                 }}
                 className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-colors ${activeTab === tab.key
@@ -1561,8 +1601,274 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                 )}
               </>
             )}
-          </div>
-        )}
+      </div>
+    )}
+
+        {/* ===== 作业看板 Tab ===== */}
+        {activeTab === 'assignments' && (() => {
+          const allAssignments = [...activeAssignments, ...assignmentHistory];
+          const today = new Date().toISOString().split('T')[0];
+
+          // 每条作业的统计
+          const stats = allAssignments.map(a => {
+            const subs = assignmentSubmissions[a.id] || [];
+            const classInfo = classes.find(c => c.class_name === a.class_name);
+            const classTotal = classInfo?.student_count ?? 0;
+            const submitted = subs.length;
+            const completionRate = classTotal > 0 ? Math.round((submitted / classTotal) * 100) : 0;
+            const isOverdue = Boolean(a.due_date && a.due_date < today);
+            const overdueCount = isOverdue ? Math.max(classTotal - submitted, 0) : 0;
+            const avgAccuracy = subs.length > 0
+              ? Math.round(subs.reduce((sum, s) => sum + (s.accuracy_rate ?? 0), 0) / subs.length * 10) / 10
+              : null;
+            return { ...a, subs, classTotal, submitted, completionRate, isOverdue, overdueCount, avgAccuracy };
+          });
+
+          // 班级对比：每个班的作业完成情况汇总
+          const classSummary: Record<string, { total: number; sumRate: number; overdueTotal: number; assignments: number }> = {};
+          stats.forEach(s => {
+            if (!classSummary[s.class_name]) classSummary[s.class_name] = { total: 0, sumRate: 0, overdueTotal: 0, assignments: 0 };
+            classSummary[s.class_name].assignments += 1;
+            classSummary[s.class_name].sumRate += s.completionRate;
+            classSummary[s.class_name].overdueTotal += s.overdueCount;
+          });
+
+          // 顶部汇总指标
+          const totalActive = activeAssignments.length;
+          const avgCompletionRate = allSubmissionsLoaded && stats.length > 0
+            ? Math.round(stats.reduce((sum, s) => sum + s.completionRate, 0) / stats.length)
+            : null;
+          const totalOverdue = stats.reduce((sum, s) => sum + s.overdueCount, 0);
+
+          return (
+            <div className="space-y-6">
+              {/* 顶部按钮行 */}
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold text-slate-900">作业看板</h3>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setAllSubmissionsLoaded(false);
+                      setAssignmentSubmissions({});
+                      const allIds = [...activeAssignments, ...assignmentHistory].map(a => a.id);
+                      void loadAllSubmissions(allIds);
+                    }}
+                    className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 flex items-center gap-1"
+                  >
+                    <RefreshCw className="w-3 h-3" /> 刷新数据
+                  </button>
+                  <button
+                    onClick={() => void openAssignModal()}
+                    className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-1"
+                  >
+                    <ClipboardList className="w-3 h-3" /> 布置新作业
+                  </button>
+                </div>
+              </div>
+
+              {/* 汇总卡片 */}
+              {allSubmissionsLoaded && (
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm text-center">
+                    <p className="text-2xl font-bold text-blue-600">{totalActive}</p>
+                    <p className="text-xs text-slate-500 mt-1">生效作业数</p>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm text-center">
+                    <p className={`text-2xl font-bold ${avgCompletionRate != null && avgCompletionRate >= 80 ? 'text-emerald-600' : avgCompletionRate != null && avgCompletionRate >= 50 ? 'text-amber-500' : 'text-slate-400'}`}>
+                      {avgCompletionRate != null ? `${avgCompletionRate}%` : '—'}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">平均完成率</p>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm text-center">
+                    <p className={`text-2xl font-bold ${totalOverdue > 0 ? 'text-red-500' : 'text-emerald-600'}`}>{totalOverdue}</p>
+                    <p className="text-xs text-slate-500 mt-1">逾期未提交</p>
+                  </div>
+                </div>
+              )}
+
+              {allSubmissionsLoading && (
+                <div className="text-center py-8 text-slate-400 text-sm">正在加载提交数据...</div>
+              )}
+
+              {/* 班级对比 */}
+              {allSubmissionsLoaded && Object.keys(classSummary).length > 1 && (
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+                  <h4 className="text-sm font-bold text-slate-800 mb-4">班级完成率对比</h4>
+                  <div className="space-y-3">
+                    {Object.entries(classSummary)
+                      .map(([cls, info]) => ({
+                        cls,
+                        avgRate: info.assignments > 0 ? Math.round(info.sumRate / info.assignments) : 0,
+                        overdueTotal: info.overdueTotal,
+                        assignments: info.assignments,
+                      }))
+                      .sort((a, b) => b.avgRate - a.avgRate)
+                      .map(({ cls, avgRate, overdueTotal, assignments }) => (
+                        <div key={cls} className="flex items-center gap-3">
+                          <div className="w-24 text-xs font-medium text-slate-700 text-right shrink-0">{cls}</div>
+                          <div className="flex-1 h-5 bg-slate-100 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all ${avgRate >= 80 ? 'bg-emerald-500' : avgRate >= 50 ? 'bg-amber-400' : 'bg-red-400'}`}
+                              style={{ width: `${avgRate}%` }}
+                            />
+                          </div>
+                          <div className="w-24 flex items-center gap-1.5 text-xs shrink-0">
+                            <span className={`font-bold ${avgRate >= 80 ? 'text-emerald-600' : avgRate >= 50 ? 'text-amber-600' : 'text-red-500'}`}>{avgRate}%</span>
+                            <span className="text-slate-400">({assignments}条作业)</span>
+                          </div>
+                          {overdueTotal > 0 && (
+                            <span className="text-xs text-red-500 font-medium shrink-0">⚠ {overdueTotal}人逾期</span>
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 每条作业详情 */}
+              <div className="space-y-4">
+                {stats.length === 0 ? (
+                  <div className="text-center py-12 text-slate-400 text-sm">暂无作业，点击"布置新作业"开始</div>
+                ) : (
+                  stats.map(a => {
+                    const isExpanded = expandedAssignmentId === a.id;
+                    return (
+                      <div key={a.id} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+                        {/* 作业头部 */}
+                        <div className="px-5 pt-4 pb-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap mb-1">
+                                <span className="text-sm font-bold text-slate-900">{a.class_name}</span>
+                                {a.is_active && (!a.due_date || a.due_date >= today) ? (
+                                  <span className="text-xs px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded-full font-medium">生效中</span>
+                                ) : a.isOverdue ? (
+                                  <span className="text-xs px-1.5 py-0.5 bg-red-100 text-red-600 rounded-full font-medium">已逾期</span>
+                                ) : (
+                                  <span className="text-xs px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-full font-medium">已结束</span>
+                                )}
+                                {a.overdueCount > 0 && (
+                                  <span className="text-xs px-1.5 py-0.5 bg-red-50 text-red-500 rounded-full">⚠ {a.overdueCount}人未交</span>
+                                )}
+                              </div>
+                              <p className="text-sm text-slate-600">📖 {a.material_title}</p>
+                              <p className="text-xs text-slate-400 mt-0.5">
+                                布置于 {new Date(a.created_at).toLocaleDateString('zh-CN')}
+                                {a.due_date && <span className="ml-2">截止：{a.due_date}</span>}
+                              </p>
+                            </div>
+                            {/* 作业效果指标 */}
+                            {allSubmissionsLoaded && a.avgAccuracy != null && (
+                              <div className="text-center shrink-0">
+                                <p className={`text-lg font-bold ${a.avgAccuracy >= 85 ? 'text-emerald-600' : a.avgAccuracy >= 70 ? 'text-amber-500' : 'text-red-500'}`}>
+                                  {a.avgAccuracy}%
+                                </p>
+                                <p className="text-xs text-slate-400">平均正确率</p>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* 完成率进度条 */}
+                          {allSubmissionsLoaded && (
+                            <div className="mt-3">
+                              <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                                <span>完成率</span>
+                                <span className="font-semibold text-slate-700">{a.submitted}/{a.classTotal > 0 ? a.classTotal : '?'} 人已提交</span>
+                              </div>
+                              <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full transition-all ${
+                                    a.completionRate >= 80 ? 'bg-emerald-500'
+                                    : a.completionRate >= 50 ? 'bg-amber-400'
+                                    : 'bg-red-400'
+                                  }`}
+                                  style={{ width: a.classTotal > 0 ? `${a.completionRate}%` : '0%' }}
+                                />
+                              </div>
+                              <div className="flex items-center justify-between mt-1">
+                                <span className={`text-xs font-bold ${a.completionRate >= 80 ? 'text-emerald-600' : a.completionRate >= 50 ? 'text-amber-600' : 'text-slate-500'}`}>
+                                  {a.classTotal > 0 ? `${a.completionRate}%` : '班级人数未知'}
+                                </span>
+                                <button
+                                  onClick={() => {
+                                    if (isExpanded) {
+                                      setExpandedAssignmentId(null);
+                                    } else {
+                                      void loadSubmissions(a.id);
+                                    }
+                                  }}
+                                  className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                                >
+                                  <Users className="w-3 h-3" />
+                                  {isExpanded ? '收起名单' : '查看名单'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 展开：提交名单 */}
+                        {isExpanded && (
+                          <div className="border-t border-slate-100 bg-slate-50 px-5 py-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <p className="text-xs font-semibold text-slate-600">已提交名单（{a.subs.length} 人）</p>
+                              <button
+                                onClick={() => void refreshSubmissions(a.id)}
+                                className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                              >
+                                <RefreshCw className="w-3 h-3" /> 刷新
+                              </button>
+                            </div>
+                            {a.subs.length === 0 ? (
+                              <p className="text-xs text-slate-400 py-2">暂无学生提交</p>
+                            ) : (
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="text-slate-500 border-b border-slate-200">
+                                      <th className="text-left py-1.5 pr-4 font-medium">姓名</th>
+                                      <th className="text-left py-1.5 pr-4 font-medium">学号</th>
+                                      <th className="text-left py-1.5 pr-4 font-medium">正确率</th>
+                                      <th className="text-left py-1.5 font-medium">提交时间</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {a.subs
+                                      .slice()
+                                      .sort((x, y) => (y.accuracy_rate ?? 0) - (x.accuracy_rate ?? 0))
+                                      .map((s, idx) => (
+                                        <tr key={s.id} className="border-b border-slate-100 hover:bg-white">
+                                          <td className="py-1.5 pr-4 font-medium text-slate-800">
+                                            {idx === 0 && a.subs.length > 1 && <span className="mr-1">🥇</span>}
+                                            {s.student_name}
+                                          </td>
+                                          <td className="py-1.5 pr-4 text-slate-500">{s.student_number || '—'}</td>
+                                          <td className="py-1.5 pr-4">
+                                            {s.accuracy_rate != null ? (
+                                              <span className={`font-bold ${s.accuracy_rate >= 90 ? 'text-emerald-600' : s.accuracy_rate >= 70 ? 'text-amber-600' : 'text-red-500'}`}>
+                                                {s.accuracy_rate}%
+                                              </span>
+                                            ) : '—'}
+                                          </td>
+                                          <td className="py-1.5 text-slate-400">
+                                            {new Date(s.submitted_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* 布置作业模态框 */}
