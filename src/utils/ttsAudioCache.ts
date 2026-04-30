@@ -77,52 +77,33 @@ async function openAiSpeechMp3(text: string, apiKey: string): Promise<Blob> {
   return res.blob();
 }
 
-function getAzureKey(): string | null {
-  return (
-    (import.meta.env.VITE_AZURE_SPEECH_KEY as string | undefined)?.trim() ||
-    localStorage.getItem('user_azure_speech_key')?.trim() ||
-    null
-  );
-}
+async function azureEdgeFunctionMp3(text: string): Promise<Blob> {
+  const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.replace(/\/$/, '');
+  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+  if (!supabaseUrl || !supabaseAnonKey) throw new Error('Supabase 未配置');
 
-function getAzureRegion(): string | null {
-  return (
-    (import.meta.env.VITE_AZURE_SPEECH_REGION as string | undefined)?.trim() ||
-    localStorage.getItem('user_azure_speech_region')?.trim() ||
-    null
-  );
-}
-
-function escapeForSsml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-async function azureSpeechMp3(text: string, apiKey: string, region: string): Promise<Blob> {
-  const endpoint = `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`;
-  const safeText = escapeForSsml(text.slice(0, 4096));
-  const ssml = `<speak version="1.0" xml:lang="en-US"><voice name="${AZURE_TTS_VOICE}">${safeText}</voice></speak>`;
+  const endpoint = `${supabaseUrl}/functions/v1/tts-synthesize`;
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), TTS_REQUEST_TIMEOUT_MS);
   const res = await fetch(endpoint, {
     method: 'POST',
     signal: controller.signal,
     headers: {
-      'Ocp-Apim-Subscription-Key': apiKey,
-      'Content-Type': 'application/ssml+xml',
-      'X-Microsoft-OutputFormat': AZURE_TTS_OUTPUT_FORMAT,
+      'Content-Type': 'application/json',
+      'apikey': supabaseAnonKey,
+      'Authorization': `Bearer ${supabaseAnonKey}`,
     },
-    body: ssml,
+    body: JSON.stringify({
+      text: text.slice(0, 4096),
+      voice: AZURE_TTS_VOICE,
+      outputFormat: AZURE_TTS_OUTPUT_FORMAT,
+    }),
   }).finally(() => {
     window.clearTimeout(timer);
   });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Azure TTS ${res.status}: ${err.slice(0, 200)}`);
+    throw new Error(`tts-synthesize ${res.status}: ${err.slice(0, 200)}`);
   }
   return res.blob();
 }
@@ -138,13 +119,7 @@ async function synthesizeMp3ByProvider(text: string): Promise<Blob | null> {
     return openAiSpeechMp3(text, apiKey);
   }
   if (TTS_PROVIDER === 'azure') {
-    const key = getAzureKey();
-    const region = getAzureRegion();
-    if (!key || !region) {
-      console.warn('[TTS cache] 未配置 Azure Speech key/region，跳过 Azure TTS');
-      return null;
-    }
-    return azureSpeechMp3(text, key, region);
+    return azureEdgeFunctionMp3(text);
   }
   return null;
 }
