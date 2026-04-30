@@ -131,8 +131,8 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
           </button>
         </div>
 
-        {/* 原文显示（作业模式下完全禁用） */}
-        {!isAssignmentMode && showOriginalText && (
+        {/* 原文显示（作业模式完全禁用 / 自由模式需全部提交后） */}
+        {!isAssignmentMode && showOriginalText && sentences.length > 0 && results.size >= sentences.length && (
           <div className="bg-slate-50 border-2 border-slate-200 rounded-xl p-6 mb-6 shadow-sm mt-4">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold text-slate-700 flex items-center gap-2">
@@ -198,15 +198,32 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
               {isPlaying ? '停止' : '朗读全文'}
             </button>
 
-            {!isAssignmentMode && (
-              <button
-                onClick={() => setShowOriginalText(!showOriginalText)}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors bg-gray-100 text-gray-600 hover:bg-gray-200"
-              >
-                {showOriginalText ? <EyeOff size={18} /> : <Eye size={18} />}
-                {showOriginalText ? '隐藏' : '原文'}
-              </button>
-            )}
+            {!isAssignmentMode && (() => {
+              const allSubmitted = sentences.length > 0 && results.size >= sentences.length;
+              const remaining = Math.max(sentences.length - results.size, 0);
+              return (
+                <button
+                  onClick={() => {
+                    if (!allSubmitted) {
+                      alert(`📝 请先完成全部听写后再查看原文。\n还剩 ${remaining} 句未提交。`);
+                      return;
+                    }
+                    setShowOriginalText(!showOriginalText);
+                  }}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                    allSubmitted
+                      ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      : 'bg-gray-50 text-gray-400 cursor-not-allowed'
+                  }`}
+                  title={allSubmitted ? '' : `完成全部听写后可查看原文（还剩 ${remaining} 句）`}
+                >
+                  {showOriginalText ? <EyeOff size={18} /> : <Eye size={18} />}
+                  {!allSubmitted
+                    ? `原文（剩 ${remaining} 句）`
+                    : (showOriginalText ? '隐藏' : '原文')}
+                </button>
+              );
+            })()}
 
             <div className="flex flex-col gap-1 bg-gray-50 px-3 py-1 rounded-lg border border-gray-100">
               <div className="flex items-center justify-between gap-2">
