@@ -228,6 +228,7 @@ function App() {
               rawText={rawText}
               onFinish={handleFinish}
               onBack={handleRestart}
+              isAssignmentMode={Boolean(studentMetadata?.assignmentId)}
             />
           )}
 

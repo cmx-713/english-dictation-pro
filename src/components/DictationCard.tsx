@@ -5,12 +5,21 @@ import { Sentence } from '../utils/textProcessing';
 import { calculateDiff, DiffResult, predictErrorReason } from '../utils/diffLogic';
 import { isSemanticallyCorrect } from '../utils/textMatcher';
 
+interface InputMeta {
+  pasted: boolean;
+  typingDurationMs: number;
+  avgKeyIntervalMs: number | null;
+  suspicious: boolean;
+}
+
 interface DictationCardProps {
   sentence: Sentence;
-  onComplete: (sentenceId: string, userInput: string, diffResult: DiffResult) => void;
+  onComplete: (sentenceId: string, userInput: string, diffResult: DiffResult, inputMeta?: InputMeta) => void;
   speechRate: number;
   voice: SpeechSynthesisVoice | null;
   autoPlay?: boolean;
+  /** 作业模式：禁粘贴 + 检测可疑输入 */
+  isAssignmentMode?: boolean;
 }
 
 export const DictationCard: React.FC<DictationCardProps> = ({
@@ -18,7 +27,8 @@ export const DictationCard: React.FC<DictationCardProps> = ({
   onComplete,
   speechRate,
   voice,
-  autoPlay
+  autoPlay,
+  isAssignmentMode = false,
 }) => {
   const [input, setInput] = useState('');
   const [isSubmitted, setIsSubmitted] = useState(false);
@@ -32,6 +42,13 @@ export const DictationCard: React.FC<DictationCardProps> = ({
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const startOffsetRef = useRef(0); // 当前 utterance 起始字符偏移
   const totalLength = sentence.text.length;
+
+  // 反作弊：输入行为追踪
+  const pastedRef = useRef(false);
+  const firstInputAtRef = useRef<number | null>(null);
+  const lastKeyTimeRef = useRef<number | null>(null);
+  const keyIntervalsRef = useRef<number[]>([]);
+  const [pasteWarning, setPasteWarning] = useState(false);
 
   // 播放从指定字符位置开始的文本
   const playFromOffset = (offset: number) => {
@@ -111,8 +128,58 @@ export const DictationCard: React.FC<DictationCardProps> = ({
     };
   }, [sentence.id]);
 
+  // 处理粘贴：作业模式下拦截
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    pastedRef.current = true;
+    if (isAssignmentMode) {
+      e.preventDefault();
+      setPasteWarning(true);
+      setTimeout(() => setPasteWarning(false), 2500);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLTextAreaElement>) => {
+    if (isAssignmentMode) e.preventDefault();
+  };
+
+  // 按键时间间隔统计（用于作弊检测）
+  const handleKeyTracking = (e: React.KeyboardEvent) => {
+    // 仅记录"内容输入类"按键
+    const isContentKey = e.key.length === 1 || e.key === 'Backspace' || e.key === ' ';
+    if (!isContentKey) return;
+    const now = performance.now();
+    if (firstInputAtRef.current === null) firstInputAtRef.current = now;
+    if (lastKeyTimeRef.current !== null) {
+      const interval = now - lastKeyTimeRef.current;
+      if (interval > 0 && interval < 5000) {
+        keyIntervalsRef.current.push(interval);
+      }
+    }
+    lastKeyTimeRef.current = now;
+  };
+
+  const buildInputMeta = (): InputMeta => {
+    const now = performance.now();
+    const typingDurationMs = firstInputAtRef.current != null ? now - firstInputAtRef.current : 0;
+    const intervals = keyIntervalsRef.current;
+    const avg = intervals.length > 0 ? intervals.reduce((a, b) => a + b, 0) / intervals.length : null;
+    // 可疑判定：触发过粘贴 / 击键太少（直接整段出现）/ 平均间隔过短
+    const expectedKeys = Math.max(1, Math.floor(input.length * 0.6)); // 至少应有 60% 字符量级的按键
+    const tooFewKeys = input.length > 8 && intervals.length < expectedKeys * 0.3;
+    const tooFast = avg !== null && avg < 25 && input.length > 8; // 25ms 以下平均间隔显著异常
+    const suspicious = pastedRef.current || tooFewKeys || tooFast;
+    return {
+      pasted: pastedRef.current,
+      typingDurationMs: Math.round(typingDurationMs),
+      avgKeyIntervalMs: avg !== null ? Math.round(avg) : null,
+      suspicious,
+    };
+  };
+
   const handleSubmit = () => {
     if (!input.trim()) return;
+
+    const inputMeta = buildInputMeta();
 
     // 1. 智能比对
     const isSmartMatch = isSemanticallyCorrect(input, sentence.text);
@@ -121,16 +188,14 @@ export const DictationCard: React.FC<DictationCardProps> = ({
     let feedback: string[] = [];
 
     if (isSmartMatch) {
-      // 2. 满分构造 (修复点：增加了 errors: [])
       finalResult = {
         diffs: [[0, sentence.text]],
         accuracy: 100,
         score: 10,
-        errors: [] // <--- 必须补上这个空数组，否则 Build 会报错
+        errors: []
       };
       feedback = [];
     } else {
-      // 3. 严格比对
       finalResult = calculateDiff(sentence.text, input);
       feedback = predictErrorReason(finalResult.diffs);
     }
@@ -138,7 +203,7 @@ export const DictationCard: React.FC<DictationCardProps> = ({
     setDiffResult(finalResult);
     setIsSubmitted(true);
     setErrorFeedback(feedback);
-    onComplete(sentence.id, input, finalResult);
+    onComplete(sentence.id, input, finalResult, inputMeta);
   };
 
   const handleRetry = () => {
@@ -149,6 +214,7 @@ export const DictationCard: React.FC<DictationCardProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    handleKeyTracking(e);
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
@@ -221,10 +287,18 @@ export const DictationCard: React.FC<DictationCardProps> = ({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="听完句子后，在这里输入..."
+            onPaste={handlePaste}
+            onDrop={handleDrop}
+            placeholder={isAssignmentMode ? "🔒 作业模式：请逐字键入听到的内容（粘贴已禁用）" : "听完句子后，在这里输入..."}
             className="w-full p-4 rounded-lg border border-gray-200 focus:ring-2 focus:ring-primary focus:border-transparent outline-none resize-none text-lg"
             rows={2}
           />
+          {pasteWarning && (
+            <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded px-3 py-1.5 flex items-center gap-2">
+              <AlertCircle size={14} />
+              作业模式禁止粘贴，请手动输入。
+            </div>
+          )}
           <div className="flex justify-end">
             <button
               onClick={handleSubmit}

@@ -121,7 +121,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   // 作业相关状态
   interface LibraryMaterial { id: string; title: string; difficulty_level: string; category: string; word_count: number; }
   interface ClassAssignment { id: string; class_name: string; material_id: string; material_title: string; due_date: string | null; is_active: boolean; created_at: string; }
-  interface AssignmentSubmission { id: string; student_name: string; student_number: string | null; submitted_at: string; accuracy_rate: number | null; }
+  interface AssignmentSubmission {
+    id: string;
+    student_name: string;
+    student_number: string | null;
+    submitted_at: string;
+    accuracy_rate: number | null;
+    is_suspicious?: boolean | null;
+    suspicious_reasons?: string[] | null;
+    pasted_count?: number | null;
+    suspicious_sentence_count?: number | null;
+  }
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [assignClass, setAssignClass] = useState('');
   const [assignMaterialId, setAssignMaterialId] = useState('');
@@ -431,11 +441,22 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     if (assignmentIds.length === 0) { setAllSubmissionsLoaded(true); return; }
     setAllSubmissionsLoading(true);
     try {
-      const { data, error } = await supabase
+      const FULL_COLS = 'id, assignment_id, student_name, student_number, submitted_at, accuracy_rate, is_suspicious, suspicious_reasons, pasted_count, suspicious_sentence_count';
+      const FALLBACK_COLS = 'id, assignment_id, student_name, student_number, submitted_at, accuracy_rate';
+      let { data, error } = await supabase
         .from('assignment_submissions')
-        .select('id, assignment_id, student_name, student_number, submitted_at, accuracy_rate')
+        .select(FULL_COLS)
         .in('assignment_id', assignmentIds)
         .order('submitted_at', { ascending: false });
+      if (error && /column .* does not exist|is_suspicious|suspicious_reasons|pasted_count|suspicious_sentence_count/i.test(error.message || '')) {
+        const fallback: any = await supabase
+          .from('assignment_submissions')
+          .select(FALLBACK_COLS)
+          .in('assignment_id', assignmentIds)
+          .order('submitted_at', { ascending: false });
+        data = fallback.data;
+        error = fallback.error;
+      }
       if (error) {
         const msg = String(error.message || '');
         if (msg.includes('does not exist') || msg.includes('permission denied') || msg.includes('row-level security')) {
@@ -468,11 +489,22 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     setSubmissionsLoading(prev => ({ ...prev, [assignmentId]: true }));
     setExpandedAssignmentId(assignmentId);
     try {
-      const { data, error } = await supabase
+      const FULL_COLS = 'id, student_name, student_number, submitted_at, accuracy_rate, is_suspicious, suspicious_reasons, pasted_count, suspicious_sentence_count';
+      const FALLBACK_COLS = 'id, student_name, student_number, submitted_at, accuracy_rate';
+      let { data, error } = await supabase
         .from('assignment_submissions')
-        .select('id, student_name, student_number, submitted_at, accuracy_rate')
+        .select(FULL_COLS)
         .eq('assignment_id', assignmentId)
         .order('submitted_at', { ascending: false });
+      if (error && /column .* does not exist|is_suspicious|suspicious_reasons|pasted_count|suspicious_sentence_count/i.test(error.message || '')) {
+        const fallback: any = await supabase
+          .from('assignment_submissions')
+          .select(FALLBACK_COLS)
+          .eq('assignment_id', assignmentId)
+          .order('submitted_at', { ascending: false });
+        data = fallback.data;
+        error = fallback.error;
+      }
       if (error) {
         const msg = String(error.message || '');
         if (msg.includes('does not exist') || msg.includes('permission denied') || msg.includes('row-level security')) {
@@ -2008,11 +2040,23 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                                     {a.subs
                                       .slice()
                                       .sort((x, y) => (y.accuracy_rate ?? 0) - (x.accuracy_rate ?? 0))
-                                      .map((s, idx) => (
-                                        <tr key={s.id} className="border-b border-slate-100 hover:bg-white">
+                                      .map((s, idx) => {
+                                        const reasonsText = (s.suspicious_reasons || []).map(r =>
+                                          r === 'pasted' ? '粘贴' : r === 'tooFast' ? '按键过快' : r === 'tooFewKeys' ? '按键过少' : r
+                                        ).join('、');
+                                        return (
+                                        <tr key={s.id} className={`border-b border-slate-100 hover:bg-white ${s.is_suspicious ? 'bg-red-50/50' : ''}`}>
                                           <td className="py-1.5 pr-4 font-medium text-slate-800">
-                                            {idx === 0 && a.subs.length > 1 && <span className="mr-1">🥇</span>}
+                                            {idx === 0 && a.subs.length > 1 && !s.is_suspicious && <span className="mr-1">🥇</span>}
                                             {s.student_name}
+                                            {s.is_suspicious && (
+                                              <span
+                                                className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-red-100 text-red-600 rounded text-[10px] font-bold align-middle"
+                                                title={`可疑提交：${reasonsText || '行为异常'}${s.pasted_count ? `（粘贴${s.pasted_count}次）` : ''}${s.suspicious_sentence_count ? `（${s.suspicious_sentence_count}句异常）` : ''}`}
+                                              >
+                                                ⚠ 可疑
+                                              </span>
+                                            )}
                                           </td>
                                           <td className="py-1.5 pr-4 text-slate-500">{s.student_number || '—'}</td>
                                           <td className="py-1.5 pr-4">
@@ -2026,7 +2070,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                                             {new Date(s.submitted_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                                           </td>
                                         </tr>
-                                      ))}
+                                        );
+                                      })}
                                   </tbody>
                                 </table>
                               </div>

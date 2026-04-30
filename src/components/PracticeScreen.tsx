@@ -11,6 +11,8 @@ interface PracticeScreenProps {
   rawText: string;
   onFinish: (results: SentenceResult[]) => void;
   onBack: () => void;
+  /** 是否处于作业模式（启用反作弊：禁粘贴、提交前不可看原文） */
+  isAssignmentMode?: boolean;
 }
 
 export interface SentenceResult {
@@ -20,9 +22,16 @@ export interface SentenceResult {
   accuracy: number;
   score: number;
   diffs: any[];
+  /** 输入行为元数据（反作弊用） */
+  inputMeta?: {
+    pasted: boolean;        // 是否触发过粘贴
+    typingDurationMs: number; // 从首次输入到提交的耗时
+    avgKeyIntervalMs: number | null; // 平均按键间隔
+    suspicious: boolean;    // 综合可疑标记
+  };
 }
 
-export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinish, onBack }) => {
+export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinish, onBack, isAssignmentMode = false }) => {
   const [sentences, setSentences] = useState<Sentence[]>([]);
   const [results, setResults] = useState<Map<string, SentenceResult>>(new Map());
   const [showOriginalText, setShowOriginalText] = useState(false);
@@ -50,7 +59,12 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
 
 
 
-  const handleSentenceComplete = (id: string, input: string, diff: DiffResult) => {
+  const handleSentenceComplete = (
+    id: string,
+    input: string,
+    diff: DiffResult,
+    inputMeta?: SentenceResult['inputMeta']
+  ) => {
     const originalSentence = sentences.find(s => s.id === id)?.text || "";
     const isSmartMatch = isSemanticallyCorrect(input, originalSentence);
 
@@ -65,7 +79,8 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
         userAnswer: input,
         accuracy: finalAccuracy,
         score: finalScore,
-        diffs: diff.diffs
+        diffs: diff.diffs,
+        inputMeta,
       });
       return newMap;
     });
@@ -89,6 +104,17 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
       {/* 主内容区域：保持固定布局，AI 侧栏覆盖显示，不挤压内容 */}
       <div className="max-w-4xl mx-auto pb-20 px-4 transition-all duration-300 ease-in-out">
 
+        {/* 作业模式提示 */}
+        {isAssignmentMode && (
+          <div className="mt-4 mb-2 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl px-4 py-3 flex items-center gap-3">
+            <span className="text-2xl">🔒</span>
+            <div className="flex-1 text-sm">
+              <p className="font-semibold text-amber-800">作业模式 · 已开启专注规则</p>
+              <p className="text-amber-700 text-xs mt-0.5">禁止粘贴文本 · 提交前不可查看原文 · 异常输入将被记录</p>
+            </div>
+          </div>
+        )}
+
         {/* 顶部返回按钮 */}
         <div className="pt-6 mb-2">
           <button
@@ -105,8 +131,8 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
           </button>
         </div>
 
-        {/* 原文显示 */}
-        {showOriginalText && (
+        {/* 原文显示（作业模式下完全禁用） */}
+        {!isAssignmentMode && showOriginalText && (
           <div className="bg-slate-50 border-2 border-slate-200 rounded-xl p-6 mb-6 shadow-sm mt-4">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold text-slate-700 flex items-center gap-2">
@@ -172,13 +198,15 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
               {isPlaying ? '停止' : '朗读全文'}
             </button>
 
-            <button
-              onClick={() => setShowOriginalText(!showOriginalText)}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 font-medium transition-colors"
-            >
-              {showOriginalText ? <EyeOff size={18} /> : <Eye size={18} />}
-              {showOriginalText ? '隐藏' : '原文'}
-            </button>
+            {!isAssignmentMode && (
+              <button
+                onClick={() => setShowOriginalText(!showOriginalText)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors bg-gray-100 text-gray-600 hover:bg-gray-200"
+              >
+                {showOriginalText ? <EyeOff size={18} /> : <Eye size={18} />}
+                {showOriginalText ? '隐藏' : '原文'}
+              </button>
+            )}
 
             <div className="flex flex-col gap-1 bg-gray-50 px-3 py-1 rounded-lg border border-gray-100">
               <div className="flex items-center justify-between gap-2">
@@ -226,7 +254,7 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
               speechRate={speechRate}
               voice={selectedVoice}
               autoPlay={false}
-
+              isAssignmentMode={isAssignmentMode}
             />
           ))}
         </div>
