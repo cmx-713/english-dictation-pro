@@ -1,7 +1,9 @@
 
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Book, Clock, BarChart, ChevronRight, Loader2, ArrowLeft, Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
+import { Book, Clock, BarChart, ChevronRight, Loader2, ArrowLeft, Sparkles, ChevronDown, ChevronUp, Zap, CheckCircle2 } from 'lucide-react';
+import { splitTextIntoSentences } from '../utils/textProcessing';
+import { ensureTtsAudioUrl, TTS_PROVIDER } from '../utils/ttsAudioCache';
 
 export interface DictationMaterial {
     id: string;
@@ -320,6 +322,9 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({ onSelect, onBack, 
     );
 };
 
+/* ── 预热状态类型 ── */
+type WarmupStatus = 'idle' | 'running' | 'done' | 'error';
+
 /* ── 抽离出来的材料卡片组件 ── */
 interface MaterialCardProps {
     material: DictationMaterial;
@@ -334,6 +339,31 @@ const MaterialCard: React.FC<MaterialCardProps> = ({
 }) => {
     const normalizedDifficulty = normalizeMaterialDifficulty(material.difficulty_level);
     const isMatch = highlightDifficulty && normalizedDifficulty === highlightDifficulty;
+
+    const [warmupStatus, setWarmupStatus] = useState<WarmupStatus>('idle');
+    const [warmupProgress, setWarmupProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+
+    const handleWarmup = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (warmupStatus === 'running') return;
+        const sentences = splitTextIntoSentences(material.content);
+        if (sentences.length === 0) return;
+        setWarmupStatus('running');
+        setWarmupProgress({ done: 0, total: sentences.length });
+        let failed = 0;
+        for (let i = 0; i < sentences.length; i++) {
+            try {
+                await ensureTtsAudioUrl({
+                    sentenceText: sentences[i].text,
+                    libraryMaterialId: material.id,
+                });
+            } catch {
+                failed++;
+            }
+            setWarmupProgress({ done: i + 1, total: sentences.length });
+        }
+        setWarmupStatus(failed === sentences.length ? 'error' : 'done');
+    };
 
     return (
         <div
@@ -381,15 +411,37 @@ const MaterialCard: React.FC<MaterialCardProps> = ({
                 {material.content}
             </p>
 
-            <div className="flex items-center gap-4 text-xs text-slate-400 pt-3 border-t border-slate-50">
-                <div className="flex items-center gap-1">
-                    <BarChart className="w-3.5 h-3.5" />
-                    <span>{material.word_count} 词</span>
+            <div className="flex items-center justify-between pt-3 border-t border-slate-50">
+                <div className="flex items-center gap-4 text-xs text-slate-400">
+                    <div className="flex items-center gap-1">
+                        <BarChart className="w-3.5 h-3.5" />
+                        <span>{material.word_count} 词</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>~{Math.ceil(material.word_count / 150)} 分钟</span>
+                    </div>
                 </div>
-                <div className="flex items-center gap-1">
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>~{Math.ceil(material.word_count / 150)} 分钟</span>
-                </div>
+
+                {TTS_PROVIDER !== 'none' && (
+                    <button
+                        onClick={handleWarmup}
+                        disabled={warmupStatus === 'running'}
+                        title="预生成全文 Azure 音频，学生上课时直接播放无需等待"
+                        className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-medium transition-all
+                            ${warmupStatus === 'idle' ? 'text-slate-400 bg-slate-50 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 hover:border-blue-200'
+                            : warmupStatus === 'running' ? 'text-blue-600 bg-blue-50 border border-blue-200 cursor-not-allowed'
+                            : warmupStatus === 'done' ? 'text-emerald-600 bg-emerald-50 border border-emerald-200'
+                            : 'text-red-500 bg-red-50 border border-red-200'}`}
+                    >
+                        {warmupStatus === 'idle' && <><Zap className="w-3 h-3" />预热音频</>}
+                        {warmupStatus === 'running' && (
+                            <><Loader2 className="w-3 h-3 animate-spin" />{warmupProgress.done}/{warmupProgress.total} 句</>
+                        )}
+                        {warmupStatus === 'done' && <><CheckCircle2 className="w-3 h-3" />已预热</>}
+                        {warmupStatus === 'error' && <><Zap className="w-3 h-3" />预热失败</>}
+                    </button>
+                )}
             </div>
         </div>
     );

@@ -95,6 +95,35 @@ npm run build
 npm run preview
 ```
 
+### TTS Provider 配置（素材库/作业缓存）
+
+在 `.env.local` 中可配置：
+
+```bash
+# openai: 走 OpenAI TTS + Supabase 缓存
+# azure: 走 Azure Speech TTS + Supabase 缓存
+# none: 关闭云端 TTS，自动降级 Web Speech
+VITE_TTS_PROVIDER=openai
+
+# provider=openai 时生效
+VITE_OPENAI_TTS_MODEL=tts-1
+VITE_OPENAI_TTS_VOICE=alloy
+
+# provider=azure 时生效
+VITE_AZURE_TTS_VOICE=en-US-JennyNeural
+# 可选：默认 audio-24khz-48kbitrate-mono-mp3
+VITE_AZURE_TTS_OUTPUT_FORMAT=audio-24khz-48kbitrate-mono-mp3
+# 推荐仅本地开发使用；生产请放后端/Edge Function
+VITE_AZURE_SPEECH_REGION=your-region
+VITE_AZURE_SPEECH_KEY=your-key
+```
+
+说明：
+- 当前实现 `openai` / `azure` / `none`。
+- 仅素材库/作业场景会尝试缓存；自由粘贴练习仍走 Web Speech。
+- `user_ai_api_key` 通过浏览器 `localStorage` 读取（provider=openai）。
+- Azure 支持从 `VITE_AZURE_SPEECH_*` 或 `localStorage` 的 `user_azure_speech_key` / `user_azure_speech_region` 读取。
+
 ## 📖 使用指南
 
 ### 步骤1：导入内容

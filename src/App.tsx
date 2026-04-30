@@ -49,6 +49,7 @@ function getModeFromPath(): AppMode {
 }
 
 function App() {
+  const normalizeForMaterialMatch = (text: string) => text.replace(/\s+/g, ' ').trim();
   const [mode, setMode] = useState<AppMode>(() => getModeFromPath());
   const [rawText, setRawText] = useState('');
   const [results, setResults] = useState<SentenceResult[]>([]);
@@ -82,6 +83,10 @@ function App() {
     assignmentId?: string;
     assignmentTitle?: string;
   } | null>(null);
+  /** 当前练习是否关联素材库 material（用于 TTS 缓存；作业同 material_id） */
+  const [practiceLibraryMaterialId, setPracticeLibraryMaterialId] = useState<string | null>(null);
+  /** 从听力素材库点选后缓存，用于与首页文本比对是否被改动 */
+  const [libraryPickContext, setLibraryPickContext] = useState<{ id: string; content: string } | null>(null);
 
   // Navigate to a new mode, pushing a history entry
   const navigateTo = useCallback((newMode: AppMode) => {
@@ -121,9 +126,24 @@ function App() {
       inputMethod: 'text' | 'voice' | 'image';
       assignmentId?: string;
       assignmentTitle?: string;
+      libraryMaterialId?: string;
     }
   ) => {
     setRawText(text);
+    console.info('[App debug] handleStart', {
+      libFromMeta: metadata?.libraryMaterialId,
+      libraryPickContextId: libraryPickContext?.id,
+    });
+    const libFromMeta = metadata?.libraryMaterialId?.trim();
+    const normalizedText = normalizeForMaterialMatch(text);
+    const libFromPick =
+      !libFromMeta &&
+      libraryPickContext &&
+      normalizedText === normalizeForMaterialMatch(libraryPickContext.content)
+        ? libraryPickContext.id
+        : null;
+    setPracticeLibraryMaterialId(libFromMeta || libFromPick || null);
+
     if (metadata) {
       setStudentMetadata(metadata);
       registerStudent({
@@ -182,6 +202,8 @@ function App() {
   const handleRestart = () => {
     setRawText('');
     setResults([]);
+    setPracticeLibraryMaterialId(null);
+    setLibraryPickContext(null);
     navigateTo('setup');
   };
 
@@ -206,6 +228,7 @@ function App() {
               onStart={handleStart}
               onOpenLibrary={() => navigateTo('library')}
               initialText={rawText}
+              initialLibraryMaterialId={libraryPickContext?.id || null}
               hasLatestReport={Boolean(loadLatestResults())}
               latestReportAt={loadLatestResults()?.savedAt}
               onViewLatestReport={handleViewLatestReport}
@@ -216,6 +239,8 @@ function App() {
             <LibraryScreen
               onBack={() => navigateTo('setup')}
               onSelect={(material: DictationMaterial) => {
+                setLibraryPickContext({ id: material.id, content: material.content });
+                setPracticeLibraryMaterialId(material.id);
                 setRawText(material.content);
                 navigateTo('setup');
               }}
@@ -229,6 +254,7 @@ function App() {
               onFinish={handleFinish}
               onBack={handleRestart}
               isAssignmentMode={Boolean(studentMetadata?.assignmentId)}
+              libraryMaterialId={practiceLibraryMaterialId}
             />
           )}
 

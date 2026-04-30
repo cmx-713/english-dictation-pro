@@ -13,6 +13,8 @@ interface PracticeScreenProps {
   onBack: () => void;
   /** 是否处于作业模式（启用反作弊：禁粘贴、提交前不可看原文） */
   isAssignmentMode?: boolean;
+  /** dictation_materials.id：有则对本练习启用 OpenAI TTS 缓存（与作业/素材库一致） */
+  libraryMaterialId?: string | null;
 }
 
 export interface SentenceResult {
@@ -31,7 +33,13 @@ export interface SentenceResult {
   };
 }
 
-export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinish, onBack, isAssignmentMode = false }) => {
+export const PracticeScreen: React.FC<PracticeScreenProps> = ({
+  rawText,
+  onFinish,
+  onBack,
+  isAssignmentMode = false,
+  libraryMaterialId = null,
+}) => {
   const [sentences, setSentences] = useState<Sentence[]>([]);
   const [results, setResults] = useState<Map<string, SentenceResult>>(new Map());
   const [showOriginalText, setShowOriginalText] = useState(false);
@@ -272,6 +280,7 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({ rawText, onFinis
               voice={selectedVoice}
               autoPlay={false}
               isAssignmentMode={isAssignmentMode}
+              libraryMaterialId={libraryMaterialId}
             />
           ))}
         </div>

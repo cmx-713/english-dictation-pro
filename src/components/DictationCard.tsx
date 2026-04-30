@@ -1,9 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Play, Check, RefreshCw, AlertCircle, Pause } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Play, Check, RefreshCw, AlertCircle, Pause, Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Sentence } from '../utils/textProcessing';
 import { calculateDiff, DiffResult, predictErrorReason } from '../utils/diffLogic';
 import { isSemanticallyCorrect } from '../utils/textMatcher';
+import { ensureTtsAudioUrl } from '../utils/ttsAudioCache';
 
 interface InputMeta {
   pasted: boolean;
@@ -20,7 +21,11 @@ interface DictationCardProps {
   autoPlay?: boolean;
   /** 作业模式：禁粘贴 + 检测可疑输入 */
   isAssignmentMode?: boolean;
+  /** 有值时尝试 OpenAI TTS + Supabase 缓存（素材库/作业）；自由粘贴不传 */
+  libraryMaterialId?: string | null;
 }
+
+type TtsPhase = 'idle' | 'loading' | 'file' | 'speech';
 
 export const DictationCard: React.FC<DictationCardProps> = ({
   sentence,
@@ -29,6 +34,7 @@ export const DictationCard: React.FC<DictationCardProps> = ({
   voice,
   autoPlay,
   isAssignmentMode = false,
+  libraryMaterialId = null,
 }) => {
   const [input, setInput] = useState('');
   const [isSubmitted, setIsSubmitted] = useState(false);
@@ -36,56 +42,156 @@ export const DictationCard: React.FC<DictationCardProps> = ({
   const [errorFeedback, setErrorFeedback] = useState<string[]>([]);
   const [isPlayingLocal, setIsPlayingLocal] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [progress, setProgress] = useState(0); // 0 ~ text.length
+  /** 统一 0–100，便于与 file/speech 共用进度条 */
+  const [progressPct, setProgressPct] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const startOffsetRef = useRef(0); // 当前 utterance 起始字符偏移
+  const startOffsetRef = useRef(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const isDraggingRef = useRef(false);
+
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [ttsPhase, setTtsPhase] = useState<TtsPhase>(() =>
+    libraryMaterialId?.trim() ? 'loading' : 'speech'
+  );
+
   const totalLength = sentence.text.length;
 
-  // 反作弊：输入行为追踪
   const pastedRef = useRef(false);
   const firstInputAtRef = useRef<number | null>(null);
   const lastKeyTimeRef = useRef<number | null>(null);
   const keyIntervalsRef = useRef<number[]>([]);
   const [pasteWarning, setPasteWarning] = useState(false);
 
-  // 播放从指定字符位置开始的文本
-  const playFromOffset = (offset: number) => {
+  useEffect(() => {
+    isDraggingRef.current = isDragging;
+  }, [isDragging]);
+
+  // 载入 TTS 缓存（仅绑定 material 时）
+  useEffect(() => {
+    let cancelled = false;
+    let fallbackTimer: number | null = null;
+    if (!libraryMaterialId?.trim()) {
+      console.info('[TTS debug] skip cache: missing libraryMaterialId', {
+        sentenceId: sentence.id,
+      });
+      setAudioUrl(null);
+      setTtsPhase('speech');
+      return;
+    }
+    console.info('[TTS debug] start cache lookup', {
+      sentenceId: sentence.id,
+      libraryMaterialId: libraryMaterialId.trim(),
+    });
+    setTtsPhase('loading');
+    setAudioUrl(null);
+    fallbackTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      setTtsPhase('speech');
+    }, 8000);
+    void ensureTtsAudioUrl({
+      sentenceText: sentence.text,
+      libraryMaterialId: libraryMaterialId.trim(),
+    }).then((url) => {
+      if (cancelled) return;
+      if (fallbackTimer) window.clearTimeout(fallbackTimer);
+      if (url) {
+        console.info('[TTS debug] cache/audio ready', { sentenceId: sentence.id, hasUrl: true });
+        setAudioUrl(url);
+        setTtsPhase('file');
+      } else {
+        console.info('[TTS debug] fallback to speech', { sentenceId: sentence.id, hasUrl: false });
+        setTtsPhase('speech');
+      }
+    });
+    return () => {
+      cancelled = true;
+      if (fallbackTimer) window.clearTimeout(fallbackTimer);
+    };
+  }, [sentence.id, sentence.text, libraryMaterialId]);
+
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !audioUrl) return;
+    a.playbackRate = speechRate;
+  }, [speechRate, audioUrl]);
+
+  useEffect(() => {
+    setProgressPct(0);
+    const a = audioRef.current;
+    if (a) {
+      a.pause();
+      a.currentTime = 0;
+    }
     window.speechSynthesis.cancel();
-    const safeOffset = Math.max(0, Math.min(offset, totalLength - 1));
-    const fragment = sentence.text.slice(safeOffset);
-    if (!fragment) return;
-    const utterance = new SpeechSynthesisUtterance(fragment);
-    if (voice) utterance.voice = voice;
-    utterance.rate = speechRate;
-    startOffsetRef.current = safeOffset;
-    setProgress(safeOffset);
+    setIsPlayingLocal(false);
+    setIsPaused(false);
+  }, [sentence.id]);
 
-    utterance.onstart = () => {
-      setIsPlayingLocal(true);
-      setIsPaused(false);
-    };
-    utterance.onboundary = (e) => {
-      // charIndex 是相对当前 utterance（fragment）的字符位置
-      const abs = startOffsetRef.current + (e.charIndex || 0);
-      setProgress(prev => (isDragging ? prev : Math.min(abs, totalLength)));
-    };
-    utterance.onend = () => {
-      setIsPlayingLocal(false);
-      setIsPaused(false);
-      setProgress(totalLength);
-    };
-    utterance.onerror = () => {
-      setIsPlayingLocal(false);
-      setIsPaused(false);
-    };
+  const playSpeechFromOffsetChars = useCallback(
+    (offsetChars: number) => {
+      window.speechSynthesis.cancel();
+      if (audioUrl && audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+      const safeOffset = totalLength === 0 ? 0 : Math.max(0, Math.min(offsetChars, totalLength - 1));
+      const fragment = sentence.text.slice(safeOffset);
+      if (!fragment) return;
+      const utterance = new SpeechSynthesisUtterance(fragment);
+      if (voice) utterance.voice = voice;
+      utterance.rate = speechRate;
+      startOffsetRef.current = safeOffset;
+      setProgressPct(totalLength > 0 ? (safeOffset / totalLength) * 100 : 0);
 
-    utteranceRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
-  };
+      utterance.onstart = () => {
+        setIsPlayingLocal(true);
+        setIsPaused(false);
+      };
+      utterance.onboundary = (e) => {
+        const abs = startOffsetRef.current + (e.charIndex || 0);
+        if (!isDraggingRef.current && totalLength > 0) {
+          setProgressPct(Math.min(100, (abs / totalLength) * 100));
+        }
+      };
+      utterance.onend = () => {
+        setIsPlayingLocal(false);
+        setIsPaused(false);
+        setProgressPct(100);
+      };
+      utterance.onerror = () => {
+        setIsPlayingLocal(false);
+        setIsPaused(false);
+      };
+
+      utteranceRef.current = utterance;
+      window.speechSynthesis.speak(utterance);
+    },
+    [audioUrl, speechRate, sentence.text, totalLength, voice]
+  );
+
+  const toggleFilePlay = useCallback(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (a.paused) {
+      void a.play().catch(() => {
+        setAudioUrl(null);
+        setTtsPhase('speech');
+      });
+    } else {
+      a.pause();
+    }
+  }, []);
 
   const handlePlay = () => {
+    if (ttsPhase === 'loading') return;
+
+    if (ttsPhase === 'file' && audioUrl) {
+      toggleFilePlay();
+      return;
+    }
+
     if (isPaused) {
       window.speechSynthesis.resume();
       setIsPaused(false);
@@ -95,40 +201,56 @@ export const DictationCard: React.FC<DictationCardProps> = ({
       setIsPaused(true);
       setIsPlayingLocal(false);
     } else {
-      // 若已播放完，从头开始；否则从当前位置继续
-      const startAt = progress >= totalLength ? 0 : progress;
-      playFromOffset(startAt);
+      const pct = progressPct >= 99.5 ? 0 : progressPct;
+      const startChars = totalLength > 0 ? Math.round((pct / 100) * totalLength) : 0;
+      playSpeechFromOffsetChars(startChars);
     }
   };
 
-  // 拖动进度条
-  const handleSeek = (newOffset: number) => {
+  const applySeek = (pct: number) => {
+    const clamped = Math.max(0, Math.min(100, pct));
+    setProgressPct(clamped);
+
+    if (ttsPhase === 'file' && audioUrl) {
+      const a = audioRef.current;
+      if (a && a.duration && Number.isFinite(a.duration)) {
+        a.currentTime = (clamped / 100) * a.duration;
+      }
+      return;
+    }
+
     const wasPlaying = isPlayingLocal || isPaused;
-    setProgress(newOffset);
+    const offsetChars = totalLength > 0 ? Math.round((clamped / 100) * totalLength) : 0;
     if (wasPlaying) {
-      playFromOffset(newOffset);
+      playSpeechFromOffsetChars(offsetChars);
     } else {
       window.speechSynthesis.cancel();
       setIsPaused(false);
-      startOffsetRef.current = newOffset;
+      startOffsetRef.current = offsetChars;
     }
   };
 
   useEffect(() => {
-    if (autoPlay && !isSubmitted) {
-      handlePlay();
-      inputRef.current?.focus();
-    }
-  }, [autoPlay]);
+    if (!autoPlay || isSubmitted || ttsPhase === 'loading' || ttsPhase === 'idle') return;
+    const t = window.setTimeout(() => {
+      if (ttsPhase === 'file' && audioUrl) {
+        void audioRef.current?.play();
+        inputRef.current?.focus();
+      } else if (ttsPhase === 'speech') {
+        playSpeechFromOffsetChars(0);
+        inputRef.current?.focus();
+      }
+    }, 0);
+    return () => clearTimeout(t);
+  }, [autoPlay, isSubmitted, ttsPhase, audioUrl, playSpeechFromOffsetChars]);
 
-  // 卸载或换句时清理
   useEffect(() => {
     return () => {
       window.speechSynthesis.cancel();
+      audioRef.current?.pause();
     };
   }, [sentence.id]);
 
-  // 处理粘贴：作业模式下拦截
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     pastedRef.current = true;
     if (isAssignmentMode) {
@@ -142,9 +264,7 @@ export const DictationCard: React.FC<DictationCardProps> = ({
     if (isAssignmentMode) e.preventDefault();
   };
 
-  // 按键时间间隔统计（用于作弊检测）
   const handleKeyTracking = (e: React.KeyboardEvent) => {
-    // 仅记录"内容输入类"按键
     const isContentKey = e.key.length === 1 || e.key === 'Backspace' || e.key === ' ';
     if (!isContentKey) return;
     const now = performance.now();
@@ -163,10 +283,9 @@ export const DictationCard: React.FC<DictationCardProps> = ({
     const typingDurationMs = firstInputAtRef.current != null ? now - firstInputAtRef.current : 0;
     const intervals = keyIntervalsRef.current;
     const avg = intervals.length > 0 ? intervals.reduce((a, b) => a + b, 0) / intervals.length : null;
-    // 可疑判定：触发过粘贴 / 击键太少（直接整段出现）/ 平均间隔过短
-    const expectedKeys = Math.max(1, Math.floor(input.length * 0.6)); // 至少应有 60% 字符量级的按键
+    const expectedKeys = Math.max(1, Math.floor(input.length * 0.6));
     const tooFewKeys = input.length > 8 && intervals.length < expectedKeys * 0.3;
-    const tooFast = avg !== null && avg < 25 && input.length > 8; // 25ms 以下平均间隔显著异常
+    const tooFast = avg !== null && avg < 25 && input.length > 8;
     const suspicious = pastedRef.current || tooFewKeys || tooFast;
     return {
       pasted: pastedRef.current,
@@ -178,10 +297,7 @@ export const DictationCard: React.FC<DictationCardProps> = ({
 
   const handleSubmit = () => {
     if (!input.trim()) return;
-
     const inputMeta = buildInputMeta();
-
-    // 1. 智能比对
     const isSmartMatch = isSemanticallyCorrect(input, sentence.text);
 
     let finalResult: DiffResult;
@@ -192,7 +308,7 @@ export const DictationCard: React.FC<DictationCardProps> = ({
         diffs: [[0, sentence.text]],
         accuracy: 100,
         score: 10,
-        errors: []
+        errors: [],
       };
       feedback = [];
     } else {
@@ -227,11 +343,47 @@ export const DictationCard: React.FC<DictationCardProps> = ({
       animate={{ opacity: 1, y: 0 }}
       className={`bg-white rounded-xl shadow-md p-6 mb-6 border-l-4 ${isSubmitted ? (diffResult?.accuracy === 100 ? 'border-green-500' : 'border-orange-500') : 'border-primary'}`}
     >
+      {audioUrl && (
+        <audio
+          ref={audioRef}
+          src={audioUrl}
+          preload="auto"
+          className="hidden"
+          onPlay={() => {
+            setIsPlayingLocal(true);
+            setIsPaused(false);
+          }}
+          onPause={() => setIsPlayingLocal(false)}
+          onError={() => {
+            setAudioUrl(null);
+            setTtsPhase('speech');
+            setIsPlayingLocal(false);
+          }}
+          onEnded={() => {
+            setIsPlayingLocal(false);
+            setProgressPct(100);
+          }}
+          onTimeUpdate={() => {
+            const a = audioRef.current;
+            if (!a?.duration || !Number.isFinite(a.duration) || isDraggingRef.current) return;
+            setProgressPct((a.currentTime / a.duration) * 100);
+          }}
+        />
+      )}
+
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm text-gray-500 font-medium">
-            {isSubmitted ? "原文与对比" : isPlayingLocal ? "正在播放..." : isPaused ? "已暂停" : "请听写句子"}
-          </span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm text-gray-500 font-medium">
+              {isSubmitted ? '原文与对比' : isPlayingLocal ? '正在播放...' : isPaused ? '已暂停' : '请听写句子'}
+            </span>
+            {ttsPhase === 'file' && !isSubmitted && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">HD 音频</span>
+            )}
+            {ttsPhase === 'loading' && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-semibold">加载音频…</span>
+            )}
+          </div>
           {isSubmitted && (
             <div className={`px-3 py-1 rounded-full text-sm font-bold ${diffResult?.accuracy === 100 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
               正确率: {diffResult?.accuracy}%
@@ -239,44 +391,56 @@ export const DictationCard: React.FC<DictationCardProps> = ({
           )}
         </div>
 
-        {/* 播放控制条：播放按钮 + 可拖动进度条 */}
         <div className="flex items-center gap-3 bg-primary/5 rounded-xl px-3 py-2.5">
           <button
-            onClick={handlePlay}
+            type="button"
+            onClick={() => handlePlay()}
+            disabled={ttsPhase === 'loading'}
             className={`w-9 h-9 rounded-full flex items-center justify-center transition-all shrink-0 ${
-              isPlayingLocal || isPaused
-                ? 'bg-primary text-white shadow-md'
-                : 'bg-primary/10 text-primary hover:bg-primary hover:text-white'
+              ttsPhase === 'loading'
+                ? 'bg-gray-100 text-gray-400'
+                : isPlayingLocal || isPaused
+                  ? 'bg-primary text-white shadow-md'
+                  : 'bg-primary/10 text-primary hover:bg-primary hover:text-white'
             }`}
-            title={isPlayingLocal ? "暂停" : isPaused ? "继续播放" : "播放句子"}
+            title={isPlayingLocal ? '暂停' : isPaused ? '继续播放' : '播放句子'}
           >
-            {isPlayingLocal ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
+            {ttsPhase === 'loading' ? <Loader2 size={18} className="animate-spin" />
+              : isPlayingLocal ? <Pause size={18} />
+              : <Play size={18} className="ml-0.5" />}
           </button>
 
           <input
             type="range"
             min={0}
-            max={totalLength}
-            step={1}
-            value={Math.min(progress, totalLength)}
-            onChange={(e) => setProgress(Number(e.target.value))}
+            max={100}
+            step={0.1}
+            value={Math.min(100, Math.max(0, progressPct))}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setProgressPct(v);
+              if (ttsPhase === 'file' && audioUrl) {
+                const a = audioRef.current;
+                if (a?.duration && Number.isFinite(a.duration)) {
+                  a.currentTime = (v / 100) * a.duration;
+                }
+              }
+            }}
             onMouseDown={() => setIsDragging(true)}
             onTouchStart={() => setIsDragging(true)}
             onMouseUp={(e) => {
               setIsDragging(false);
-              handleSeek(Number((e.target as HTMLInputElement).value));
+              applySeek(Number((e.target as HTMLInputElement).value));
             }}
             onTouchEnd={(e) => {
               setIsDragging(false);
-              handleSeek(Number((e.target as HTMLInputElement).value));
+              applySeek(Number((e.target as HTMLInputElement).value));
             }}
             className="flex-1 h-1.5 accent-primary cursor-pointer"
             title="拖动到任意位置反复听"
           />
 
-          <span className="text-xs text-gray-400 font-mono shrink-0 w-12 text-right">
-            {Math.round((progress / Math.max(totalLength, 1)) * 100)}%
-          </span>
+          <span className="text-xs text-gray-400 font-mono shrink-0 w-12 text-right">{Math.round(progressPct)}%</span>
         </div>
       </div>
 
@@ -289,7 +453,7 @@ export const DictationCard: React.FC<DictationCardProps> = ({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             onDrop={handleDrop}
-            placeholder={isAssignmentMode ? "🔒 作业模式：请逐字键入听到的内容（粘贴已禁用）" : "听完句子后，在这里输入..."}
+            placeholder={isAssignmentMode ? '🔒 作业模式：请逐字键入听到的内容（粘贴已禁用）' : '听完句子后，在这里输入...'}
             className="w-full p-4 rounded-lg border border-gray-200 focus:ring-2 focus:ring-primary focus:border-transparent outline-none resize-none text-lg"
             rows={2}
           />
@@ -301,6 +465,7 @@ export const DictationCard: React.FC<DictationCardProps> = ({
           )}
           <div className="flex justify-end">
             <button
+              type="button"
               onClick={handleSubmit}
               disabled={!input.trim()}
               className="flex items-center gap-2 bg-primary text-white px-6 py-2 rounded-lg font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
@@ -353,10 +518,9 @@ export const DictationCard: React.FC<DictationCardProps> = ({
             </motion.div>
           )}
 
-
-
           <div className="flex justify-end pt-2">
             <button
+              type="button"
               onClick={handleRetry}
               className="flex items-center gap-2 text-gray-500 hover:text-primary transition-colors text-sm font-medium"
             >

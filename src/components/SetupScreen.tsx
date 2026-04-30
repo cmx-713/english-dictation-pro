@@ -8,6 +8,7 @@ import Tesseract from 'tesseract.js';
 
 interface SetupScreenProps {
   initialText?: string;
+  initialLibraryMaterialId?: string | null;
   onOpenLibrary: () => void;
   onStart: (text: string, metadata?: {
     studentName: string;
@@ -16,13 +17,23 @@ interface SetupScreenProps {
     inputMethod: 'text' | 'voice' | 'image';
     assignmentId?: string;
     assignmentTitle?: string;
+    /** 作业对应的 dictation_materials.id，用于 TTS 缓存 */
+    libraryMaterialId?: string;
   }) => void;
   hasLatestReport?: boolean;
   latestReportAt?: string;
   onViewLatestReport?: () => void;
 }
 
-export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary, initialText = '', hasLatestReport = false, latestReportAt, onViewLatestReport }) => {
+export const SetupScreen: React.FC<SetupScreenProps> = ({
+  onStart,
+  onOpenLibrary,
+  initialText = '',
+  initialLibraryMaterialId = null,
+  hasLatestReport = false,
+  latestReportAt,
+  onViewLatestReport,
+}) => {
   const [text, setText] = useState(initialText);
 
   // Update text if initialText changes (e.g. coming back from library)
@@ -148,6 +159,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
         inputMethod: 'text',
         assignmentId: classAssignment.id,
         assignmentTitle: classAssignment.material_title,
+        libraryMaterialId: classAssignment.material_id,
       });
     } catch { alert('加载素材失败'); }
     finally { setStartingAssignment(false); }
@@ -430,7 +442,13 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStart, onOpenLibrary
                     alert('请先填写学生信息（姓名和学号）');
                     return;
                   }
-                  onStart(text, { studentName, studentNumber, className, inputMethod: 'text' });
+                  onStart(text, {
+                    studentName,
+                    studentNumber,
+                    className,
+                    inputMethod: 'text',
+                    libraryMaterialId: initialLibraryMaterialId || undefined,
+                  });
                 }}
                 disabled={!text.trim()}
                 className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-8 py-3 rounded-lg font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg"
