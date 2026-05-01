@@ -2,8 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, Sparkles, User, Loader2, X, Settings, Key, AlertCircle, Save } from 'lucide-react';
 import { ERROR_ANALYSIS_SYSTEM_PROMPT } from '../utils/aiPrompts';
 
-// 默认配置
+// 默认配置（学生自行配置时使用）
 const DEFAULT_API_URL = "https://api.deepseek.com/v1/chat/completions";
+
+// Supabase Edge Function 代理（教师统一提供 key 时使用）
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
+const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ?? '';
+const EDGE_FUNCTION_URL = SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/ai-chat` : '';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -43,9 +48,11 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
   // --- 配置相关状态 ---
   const [apiKey, setApiKey] = useState('');
   const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
-  const [showSettings, setShowSettings] = useState(false); // 是否显示设置面板
+  const [showSettings, setShowSettings] = useState(false);
+  // 是否使用教师统一的 Edge Function（无 localStorage key 时自动启用）
+  const [usingTeacherKey, setUsingTeacherKey] = useState(false);
 
-  // 初始化：从本地加载 Key
+  // 初始化：从本地加载 Key，无则检查 Edge Function 是否可用
   useEffect(() => {
     const storedKey = localStorage.getItem('user_ai_api_key');
     const storedUrl = localStorage.getItem('user_ai_api_url');
@@ -53,10 +60,13 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
     if (storedKey) {
       setApiKey(storedKey);
       setApiUrl(storedUrl || DEFAULT_API_URL);
-      // 如果有 Key，不仅加载，还把欢迎语改正常
+      setMessages([{ role: 'assistant', content: '你好！我是你的专属 AI 助教。练习过程中遇到生词或听不懂的句子，都可以问我哦！' }]);
+    } else if (EDGE_FUNCTION_URL) {
+      // 无个人 key → 自动使用教师账户
+      setUsingTeacherKey(true);
       setMessages([{ role: 'assistant', content: '你好！我是你的专属 AI 助教。练习过程中遇到生词或听不懂的句子，都可以问我哦！' }]);
     } else {
-      // 没有 Key，强制显示设置页
+      // 无任何可用配置，引导用户设置
       setShowSettings(true);
     }
   }, []);
@@ -125,7 +135,7 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
   // --- 发送消息 ---
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
-    if (!apiKey) {
+    if (!apiKey && !usingTeacherKey) {
       setShowSettings(true);
       return;
     }
@@ -141,22 +151,31 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
         finalSystemPrompt += `\n\n【当前上下文】\n学生正在练习的完整原文如下：\n"${context}"\n\n请根据学生的提问，结合上述原文进行答疑或错误分析。如果学生询问具体句子的错误，请提取原文中对应的句子进行对比分析。`;
       }
 
-      const response = await fetch(apiUrl, {
+      const requestBody = JSON.stringify({
+        model: "deepseek-chat",
+        messages: [
+          { role: "system", content: finalSystemPrompt },
+          ...messages.map(m => ({ role: m.role, content: m.content })),
+          { role: "user", content: userMsg }
+        ],
+        temperature: 0.7,
+        stream: true,
+      });
+
+      // 教师账户走 Edge Function，个人 key 直连
+      const fetchUrl = usingTeacherKey ? EDGE_FUNCTION_URL : apiUrl;
+      const fetchHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (usingTeacherKey) {
+        fetchHeaders['apikey'] = SUPABASE_ANON_KEY;
+        fetchHeaders['Authorization'] = `Bearer ${SUPABASE_ANON_KEY}`;
+      } else {
+        fetchHeaders['Authorization'] = `Bearer ${apiKey}`;
+      }
+
+      const response = await fetch(fetchUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: [
-            { role: "system", content: finalSystemPrompt },
-            ...messages.map(m => ({ role: m.role, content: m.content })),
-            { role: "user", content: userMsg }
-          ],
-          temperature: 0.7,
-          stream: true
-        })
+        headers: fetchHeaders,
+        body: requestBody,
       });
 
       if (!response.ok) {
@@ -291,7 +310,7 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
           <div>
             <span className="font-bold text-slate-800 block leading-tight">AI 助教</span>
             <span className="text-xs text-slate-500">
-              {apiKey ? '已连接' : '未配置'}
+              {apiKey ? '自定义 Key' : usingTeacherKey ? '教师账户' : '未配置'}
             </span>
           </div>
         </div>
@@ -318,7 +337,11 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
                 <Key size={24} className="text-blue-600" />
               </div>
               <h3 className="text-lg font-bold text-slate-800">配置 AI 服务</h3>
-              <p className="text-sm text-slate-500 mt-1">请输入您的 API Key 以开始使用</p>
+              {usingTeacherKey ? (
+                <p className="text-sm text-emerald-600 mt-1 font-medium">当前使用教师账户，无需配置即可使用。<br/>如需使用自己的 Key，在下方填写并保存。</p>
+              ) : (
+                <p className="text-sm text-slate-500 mt-1">请输入您的 API Key 以开始使用</p>
+              )}
             </div>
 
             <div className="space-y-4">
@@ -363,6 +386,14 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
               <Save size={18} />
               保存配置
             </button>
+            {usingTeacherKey && (
+              <button
+                onClick={() => setShowSettings(false)}
+                className="w-full py-2 text-slate-500 hover:text-slate-700 text-sm transition-colors"
+              >
+                继续使用教师账户
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -401,13 +432,13 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-              placeholder={apiKey ? "问问 AI..." : "请先配置 API Key"}
-              disabled={!apiKey}
+              placeholder={apiKey || usingTeacherKey ? "问问 AI..." : "请先配置 API Key"}
+              disabled={!apiKey && !usingTeacherKey}
               className="w-full pl-4 pr-12 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-50 outline-none transition-all text-sm disabled:cursor-not-allowed disabled:bg-slate-100"
             />
             <button
               onClick={handleSend}
-              disabled={!input.trim() || isLoading || !apiKey}
+              disabled={!input.trim() || isLoading || (!apiKey && !usingTeacherKey)}
               className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all disabled:opacity-50 disabled:bg-slate-300"
             >
               {isLoading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}

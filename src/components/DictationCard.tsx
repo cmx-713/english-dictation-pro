@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Play, Check, RefreshCw, AlertCircle, Pause, Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Sentence } from '../utils/textProcessing';
-import { calculateDiff, DiffResult, predictErrorReason } from '../utils/diffLogic';
+import { calculateDiff, DiffResult, FeedbackItem, predictErrorReason } from '../utils/diffLogic';
+import { getLlmFeedback } from '../utils/llmFeedback';
 import { isSemanticallyCorrect } from '../utils/textMatcher';
 import { ensureTtsAudioUrl } from '../utils/ttsAudioCache';
 
@@ -39,7 +40,8 @@ export const DictationCard: React.FC<DictationCardProps> = ({
   const [input, setInput] = useState('');
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
-  const [errorFeedback, setErrorFeedback] = useState<string[]>([]);
+  const [errorFeedback, setErrorFeedback] = useState<FeedbackItem[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [isPlayingLocal, setIsPlayingLocal] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   /** 统一 0–100，便于与 file/speech 共用进度条 */
@@ -301,7 +303,6 @@ export const DictationCard: React.FC<DictationCardProps> = ({
     const isSmartMatch = isSemanticallyCorrect(input, sentence.text);
 
     let finalResult: DiffResult;
-    let feedback: string[] = [];
 
     if (isSmartMatch) {
       finalResult = {
@@ -310,16 +311,34 @@ export const DictationCard: React.FC<DictationCardProps> = ({
         score: 10,
         errors: [],
       };
-      feedback = [];
-    } else {
-      finalResult = calculateDiff(sentence.text, input);
-      feedback = predictErrorReason(finalResult.diffs);
+      setDiffResult(finalResult);
+      setIsSubmitted(true);
+      setErrorFeedback([]);
+      onComplete(sentence.id, input, finalResult, inputMeta);
+      return;
     }
 
+    finalResult = calculateDiff(sentence.text, input);
     setDiffResult(finalResult);
     setIsSubmitted(true);
-    setErrorFeedback(feedback);
     onComplete(sentence.id, input, finalResult, inputMeta);
+
+    // 有错误时异步调用 LLM 生成反馈
+    if (finalResult.accuracy < 100) {
+      setFeedbackLoading(true);
+      setErrorFeedback([]);
+      getLlmFeedback(sentence.text, input)
+        .then((items) => {
+          setErrorFeedback(items);
+        })
+        .catch(() => {
+          // LLM 失败时降级到规则引擎
+          setErrorFeedback(predictErrorReason(finalResult.diffs));
+        })
+        .finally(() => {
+          setFeedbackLoading(false);
+        });
+    }
   };
 
   const handleRetry = () => {
@@ -477,7 +496,7 @@ export const DictationCard: React.FC<DictationCardProps> = ({
         </div>
       ) : (
         <div className="space-y-4">
-          <div className="p-4 bg-gray-50 rounded-lg text-lg leading-relaxed font-serif">
+            <div className="p-4 bg-gray-50 rounded-lg text-lg leading-relaxed font-serif">
             {diffResult?.accuracy === 100 ? (
               <span className="text-gray-800">{sentence.text}</span>
             ) : (
@@ -500,21 +519,22 @@ export const DictationCard: React.FC<DictationCardProps> = ({
             </div>
           )}
 
-          {diffResult && diffResult.accuracy < 100 && (
+          {diffResult && diffResult.accuracy < 100 && feedbackLoading && (
+            <div className="flex items-center gap-2 py-3 px-4 rounded-lg bg-slate-50 border border-slate-200 text-sm text-slate-500">
+              <Loader2 size={15} className="animate-spin text-blue-500 shrink-0" />
+              AI 正在分析错误原因…
+            </div>
+          )}
+
+          {diffResult && diffResult.accuracy < 100 && !feedbackLoading && errorFeedback.length > 0 && (
             <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="bg-orange-50 border border-orange-100 rounded-lg p-4 flex gap-3 items-start"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="space-y-2"
             >
-              <AlertCircle className="text-orange-500 shrink-0 mt-0.5" size={20} />
-              <div>
-                <h4 className="font-semibold text-orange-800 text-sm mb-1">错误分析 & 建议</h4>
-                <ul className="list-disc list-inside text-sm text-orange-700 space-y-1">
-                  {errorFeedback.map((msg, i) => (
-                    <li key={i}>{msg}</li>
-                  ))}
-                </ul>
-              </div>
+              {errorFeedback.map((item, i) => (
+                <FeedbackCard key={i} item={item} />
+              ))}
             </motion.div>
           )}
 
@@ -531,5 +551,43 @@ export const DictationCard: React.FC<DictationCardProps> = ({
         </div>
       )}
     </motion.div>
+  );
+};
+
+// ── 单条反馈卡片 ────────────────────────────────────────────
+const PHENOMENON_CONFIG: Record<string, { icon: string; bg: string; border: string; labelColor: string }> = {
+  weak_form:          { icon: '🔇', bg: 'bg-blue-50',   border: 'border-blue-200',   labelColor: 'text-blue-700' },
+  auxiliary:          { icon: '🔈', bg: 'bg-indigo-50', border: 'border-indigo-200', labelColor: 'text-indigo-700' },
+  connected_speech:   { icon: '🔗', bg: 'bg-purple-50', border: 'border-purple-200', labelColor: 'text-purple-700' },
+  phonetic_confusion: { icon: '👂', bg: 'bg-amber-50',  border: 'border-amber-200',  labelColor: 'text-amber-700' },
+  spelling:           { icon: '✏️', bg: 'bg-yellow-50', border: 'border-yellow-200', labelColor: 'text-yellow-700' },
+  chunk_missing:      { icon: '📦', bg: 'bg-orange-50', border: 'border-orange-200', labelColor: 'text-orange-700' },
+  extra_word:         { icon: '➕', bg: 'bg-rose-50',   border: 'border-rose-200',   labelColor: 'text-rose-700' },
+  general:            { icon: '💬', bg: 'bg-gray-50',   border: 'border-gray-200',   labelColor: 'text-gray-700' },
+};
+
+const FeedbackCard: React.FC<{ item: FeedbackItem }> = ({ item }) => {
+  const cfg = PHENOMENON_CONFIG[item.phenomenon] ?? PHENOMENON_CONFIG.general;
+  return (
+    <div className={`rounded-lg border ${cfg.border} ${cfg.bg} px-4 py-3`}>
+      <div className="flex items-center gap-1.5 mb-1.5">
+        <span className="text-base leading-none">{cfg.icon}</span>
+        <span className={`text-xs font-bold uppercase tracking-wide ${cfg.labelColor}`}>{item.label}</span>
+        {item.words.length > 0 && (
+          <span className="ml-1 flex gap-1 flex-wrap">
+            {item.words.map((w, i) => (
+              <code key={i} className={`text-xs px-1.5 py-0.5 rounded font-mono ${cfg.bg} border ${cfg.border} ${cfg.labelColor}`}>
+                {w}
+              </code>
+            ))}
+          </span>
+        )}
+      </div>
+      <p className="text-sm text-gray-700 leading-snug mb-1.5">{item.explanation}</p>
+      <div className="flex items-start gap-1.5">
+        <span className="text-xs text-gray-400 shrink-0 mt-0.5">💡 怎么听</span>
+        <p className="text-xs text-gray-600 leading-snug">{item.tip}</p>
+      </div>
+    </div>
   );
 };
