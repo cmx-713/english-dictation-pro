@@ -20,7 +20,26 @@ export const OPENAI_TTS_VOICE = import.meta.env.VITE_OPENAI_TTS_VOICE || 'alloy'
 export const AZURE_TTS_VOICE = import.meta.env.VITE_AZURE_TTS_VOICE || 'en-US-JennyNeural';
 const AZURE_TTS_OUTPUT_FORMAT =
   import.meta.env.VITE_AZURE_TTS_OUTPUT_FORMAT || 'audio-24khz-48kbitrate-mono-mp3';
-const TTS_REQUEST_TIMEOUT_MS = 10000;
+const TTS_REQUEST_TIMEOUT_MS = 20000; // 延长到 20s，覆盖 Edge Function 冷启动 + Azure 合成
+
+// 全局并发限制：同一时间最多 2 个 TTS 合成请求，避免浏览器/Edge Function 并发雪崩
+const MAX_CONCURRENT_TTS = 2;
+let activeTtsRequests = 0;
+const ttsQueue: Array<() => void> = [];
+
+async function withTtsConcurrencyLimit<T>(task: () => Promise<T>): Promise<T> {
+  if (activeTtsRequests >= MAX_CONCURRENT_TTS) {
+    await new Promise<void>((resolve) => ttsQueue.push(resolve));
+  }
+  activeTtsRequests++;
+  try {
+    return await task();
+  } finally {
+    activeTtsRequests--;
+    const next = ttsQueue.shift();
+    if (next) next();
+  }
+}
 
 async function sha256Hex(str: string): Promise<string> {
   const buf = new TextEncoder().encode(str);
@@ -109,6 +128,10 @@ async function azureEdgeFunctionMp3(text: string): Promise<Blob> {
 }
 
 async function synthesizeMp3ByProvider(text: string): Promise<Blob | null> {
+  return withTtsConcurrencyLimit(() => synthesizeMp3ByProviderInner(text));
+}
+
+async function synthesizeMp3ByProviderInner(text: string): Promise<Blob | null> {
   if (TTS_PROVIDER === 'none') return null;
   if (TTS_PROVIDER === 'openai') {
     const apiKey = getOpenAiKey();

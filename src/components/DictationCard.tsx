@@ -88,10 +88,11 @@ export const DictationCard: React.FC<DictationCardProps> = ({
     });
     setTtsPhase('loading');
     setAudioUrl(null);
+    // 30s 兜底：覆盖排队 + 冷启动 + 合成 + Storage 上传的总时长
     fallbackTimer = window.setTimeout(() => {
       if (cancelled) return;
       setTtsPhase('speech');
-    }, 8000);
+    }, 30000);
     void ensureTtsAudioUrl({
       sentenceText: sentence.text,
       libraryMaterialId: libraryMaterialId.trim(),

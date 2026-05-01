@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { Book, Clock, BarChart, ChevronRight, Loader2, ArrowLeft, Sparkles, ChevronDown, ChevronUp, Zap, CheckCircle2 } from 'lucide-react';
 import { splitTextIntoSentences } from '../utils/textProcessing';
-import { ensureTtsAudioUrl, TTS_PROVIDER } from '../utils/ttsAudioCache';
+import { ensureTtsAudioUrl, TTS_PROVIDER, computeTtsContentHash } from '../utils/ttsAudioCache';
 
 export interface DictationMaterial {
     id: string;
@@ -323,7 +323,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({ onSelect, onBack, 
 };
 
 /* ── 预热状态类型 ── */
-type WarmupStatus = 'idle' | 'running' | 'done' | 'error';
+type WarmupStatus = 'idle' | 'running' | 'done' | 'error' | 'partial';
 
 /* ── 抽离出来的材料卡片组件 ── */
 interface MaterialCardProps {
@@ -342,6 +342,41 @@ const MaterialCard: React.FC<MaterialCardProps> = ({
 
     const [warmupStatus, setWarmupStatus] = useState<WarmupStatus>('idle');
     const [warmupProgress, setWarmupProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+
+    // 挂载时检测：根据 tts_audio_cache 中已存在的 hash 数量推断状态
+    useEffect(() => {
+        if (TTS_PROVIDER === 'none') return;
+        let cancelled = false;
+
+        (async () => {
+            const sentences = splitTextIntoSentences(material.content);
+            if (sentences.length === 0) return;
+
+            const hashes = await Promise.all(
+                sentences.map((s) => computeTtsContentHash(s.text))
+            );
+            if (cancelled) return;
+
+            const { data, error } = await supabase
+                .from('tts_audio_cache')
+                .select('content_hash')
+                .in('content_hash', hashes);
+            if (cancelled || error) return;
+
+            const cachedCount = data?.length || 0;
+            const total = hashes.length;
+            setWarmupProgress({ done: cachedCount, total });
+            if (cachedCount === 0) {
+                setWarmupStatus('idle');
+            } else if (cachedCount >= total) {
+                setWarmupStatus('done');
+            } else {
+                setWarmupStatus('partial');
+            }
+        })();
+
+        return () => { cancelled = true; };
+    }, [material.id, material.content]);
 
     const handleWarmup = async (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -427,11 +462,18 @@ const MaterialCard: React.FC<MaterialCardProps> = ({
                     <button
                         onClick={handleWarmup}
                         disabled={warmupStatus === 'running'}
-                        title="预生成全文 Azure 音频，学生上课时直接播放无需等待"
+                        title={
+                            warmupStatus === 'done'
+                                ? `已全部预热 (${warmupProgress.total}/${warmupProgress.total})`
+                                : warmupStatus === 'partial'
+                                    ? `已部分预热 ${warmupProgress.done}/${warmupProgress.total}，点击补全`
+                                    : '预生成全文 Azure 音频，学生上课时直接播放无需等待'
+                        }
                         className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-medium transition-all
                             ${warmupStatus === 'idle' ? 'text-slate-400 bg-slate-50 hover:text-blue-600 hover:bg-blue-50 border border-slate-200 hover:border-blue-200'
                             : warmupStatus === 'running' ? 'text-blue-600 bg-blue-50 border border-blue-200 cursor-not-allowed'
                             : warmupStatus === 'done' ? 'text-emerald-600 bg-emerald-50 border border-emerald-200'
+                            : warmupStatus === 'partial' ? 'text-amber-600 bg-amber-50 border border-amber-200 hover:bg-amber-100'
                             : 'text-red-500 bg-red-50 border border-red-200'}`}
                     >
                         {warmupStatus === 'idle' && <><Zap className="w-3 h-3" />预热音频</>}
@@ -439,6 +481,9 @@ const MaterialCard: React.FC<MaterialCardProps> = ({
                             <><Loader2 className="w-3 h-3 animate-spin" />{warmupProgress.done}/{warmupProgress.total} 句</>
                         )}
                         {warmupStatus === 'done' && <><CheckCircle2 className="w-3 h-3" />已预热</>}
+                        {warmupStatus === 'partial' && (
+                            <><Zap className="w-3 h-3" />部分预热 {warmupProgress.done}/{warmupProgress.total}</>
+                        )}
                         {warmupStatus === 'error' && <><Zap className="w-3 h-3" />预热失败</>}
                     </button>
                 )}
