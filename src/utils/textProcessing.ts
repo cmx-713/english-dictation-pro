@@ -70,17 +70,71 @@ const shouldSplitByMeaningGroup = (sentence: string): boolean => {
   return wordCount > 12 || charCount > 80;
 };
 
+// ── 不可拆分的固定搭配（regex 列表）─────────────────────
+// 这些短语内部的 and/or/but 不应作为分割点
+const NON_SPLIT_PATTERNS: RegExp[] = [
+  // and/or/but 内嵌的固定搭配
+  /\bmore\s+and\s+more\b/gi,
+  /\bover\s+and\s+over\b/gi,
+  /\bagain\s+and\s+again\b/gi,
+  /\bback\s+and\s+forth\b/gi,
+  /\bup\s+and\s+down\b/gi,
+  /\bin\s+and\s+out\b/gi,
+  /\bnow\s+and\s+then\b/gi,
+  /\bnow\s+and\s+again\b/gi,
+  /\bonce\s+(?:and|or)\s+twice\b/gi,
+  /\bsooner\s+or\s+later\b/gi,
+  /\bone\s+or\s+two\b/gi,
+  /\bthree\s+or\s+four\b/gi,
+  /\bblack\s+and\s+white\b/gi,
+  /\bbread\s+and\s+butter\b/gi,
+  /\bfish\s+and\s+chips\b/gi,
+  /\bsalt\s+and\s+pepper\b/gi,
+  /\bsafe\s+and\s+sound\b/gi,
+  /\bsick\s+and\s+tired\b/gi,
+  /\bnice\s+and\s+\w+\b/gi,           // nice and warm/cool/easy
+  /\b(?:either|whether)\s+\w+\s+or\s+\w+\b/gi,    // either X or Y / whether X or Y
+  /\bneither\s+\w+\s+nor\s+\w+\b/gi,              // neither X nor Y
+  /\bnot\s+only\s+.{1,40}?\s+but\s+(?:also\s+)?/gi, // not only ... but (also)
+  /\bas\s+well\s+as\b/gi,
+  /\bas\s+a\s+result\b/gi,
+  /\bfor\s+example\b/gi,
+  /\bfor\s+instance\b/gi,
+  /\bof\s+course\b/gi,
+  /\bin\s+addition(?:\s+to)?\b/gi,
+  /\bon\s+the\s+other\s+hand\b/gi,
+  /\bin\s+other\s+words\b/gi,
+  /\bat\s+the\s+same\s+time\b/gi,
+  /\bin\s+fact\b/gi,
+  /\bso\s+far\b/gi,
+  /\bso\s+that\b/gi,
+  /\band\s+so\s+on\b/gi,
+];
+
+// 强分割连词：明确的从属/并列从句边界，优先在此分割
+const STRONG_CONJUNCTIONS =
+  /\s+(because|although|though|since|while|whereas|unless|if|when|whenever|until|before|after|wherever|therefore|however|nevertheless|moreover|furthermore)\b/i;
+
+// 弱分割连词：可能在固定短语内，需要更严格的两侧长度才能切
+const WEAK_CONJUNCTIONS = /\s+(but|and|or|so|yet|nor)\b/i;
+
 // 按意群分割长句子
 const splitByMeaningGroup = (sentence: string): string[] => {
-  // 1. 定义分割符：标点符号 + 常见连词
-  // regex: 分割标点 [,;:] 
+  // 0. 保护固定搭配：用占位符替换，分割完后再还原
+  const protectedSegments: { token: string; original: string }[] = [];
+  let protectedSentence = sentence;
+  for (const pattern of NON_SPLIT_PATTERNS) {
+    protectedSentence = protectedSentence.replace(pattern, (match) => {
+      const token = `\u0001K${protectedSegments.length}\u0001`;
+      protectedSegments.push({ token, original: match });
+      return token;
+    });
+  }
+
+  // 1. 按标点分割（逗号/分号/冒号是最自然的意群边界）
   const separatorRegex = /([,;:])/;
-
-  // 初步分割
-  let initialSegments = sentence.split(separatorRegex);
-
-  // 重新组合，将分割符附着在前一个片段上
-  let mergedSegments: string[] = [];
+  const initialSegments = protectedSentence.split(separatorRegex);
+  const mergedSegments: string[] = [];
   for (let i = 0; i < initialSegments.length; i++) {
     const part = initialSegments[i];
     if (separatorRegex.test(part)) {
@@ -92,75 +146,85 @@ const splitByMeaningGroup = (sentence: string): string[] => {
     }
   }
 
-  // 2. 如果片段仍然过长，尝试按连词分割
-  let splitByConjunctions: string[] = [];
-  // 匹配常见连词 (前面必须有空格)
-  // 增加更多连接词，提高分割能力
-  const conjunctions = /\s+(because|although|however|since|while|therefore|nevertheless|if|unless|but|and|or|so)\b/i;
-
-  mergedSegments.forEach(seg => {
-    // 如果片段长于10个词，且包含连词
-    if (seg.split(/\s+/).length > 10 && conjunctions.test(seg)) {
-      // 使用特殊标记分割
-      const splitMarker = '|||';
-      // 注意：简单的 replace 可能会破坏包含连词的单词，但 used \b boundary above
-      // 为避免破坏 "bread and butter" 这种短结构，我们仅在连词前后有足够上下文时分割
-      // 但 regex 已经限制了 \s+ ... \b
-      const safeSeg = seg.replace(conjunctions, (match) => `${splitMarker}${match}`);
-      const sub = safeSeg.split(splitMarker).filter(s => s.trim());
-      splitByConjunctions.push(...sub);
+  // 2. 强连词分割（because/although 等明确从句边界，>10 词时切）
+  const splitByStrong: string[] = [];
+  mergedSegments.forEach((seg) => {
+    if (seg.split(/\s+/).length > 10 && STRONG_CONJUNCTIONS.test(seg)) {
+      const safe = seg.replace(STRONG_CONJUNCTIONS, (m) => `\u0001S\u0001${m}`);
+      splitByStrong.push(...safe.split('\u0001S\u0001').filter((s) => s.trim()));
     } else {
-      splitByConjunctions.push(seg);
+      splitByStrong.push(seg);
     }
   });
 
-  // 3. 智能合并过短的片段
+  // 3. 弱连词分割（and/or/but 等，要求段落 >14 词，且分割后两侧都 ≥5 词）
+  const splitByWeak: string[] = [];
+  splitByStrong.forEach((seg) => {
+    const wordCount = seg.split(/\s+/).length;
+    if (wordCount > 14) {
+      const match = WEAK_CONJUNCTIONS.exec(seg);
+      if (match && typeof match.index === 'number') {
+        const left = seg.slice(0, match.index).trim();
+        const right = seg.slice(match.index).trim();
+        if (
+          left.split(/\s+/).length >= 5 &&
+          right.split(/\s+/).length >= 5
+        ) {
+          splitByWeak.push(left, right);
+          return;
+        }
+      }
+    }
+    splitByWeak.push(seg);
+  });
+
+  // 4. 智能合并过短的片段
   const optimizedChunks: string[] = [];
   let currentChunk = '';
-
-  splitByConjunctions.forEach(seg => {
-    // 移除可能的前导标点（虽然一般附着在上一段，但防止万一）
+  splitByWeak.forEach((seg) => {
     const cleanSeg = seg.trim();
     if (!cleanSeg) return;
 
     const combined = currentChunk ? `${currentChunk} ${cleanSeg}` : cleanSeg;
     const segWordCount = cleanSeg.split(/\s+/).length;
-
-    // 判断是否以标点结尾
     const endsWithPunctuation = /[,;:]$/.test(currentChunk);
 
     if (!currentChunk) {
       currentChunk = cleanSeg;
     } else if (
-      // 如果当前累积片段很短 (<5词)
       currentChunk.split(/\s+/).length < 5 ||
-      // 或者当前片段是以连词开头的短句 (<8词)，且前一段没有标点结尾（连贯的）
-      (segWordCount < 8 && !endsWithPunctuation)
+      (segWordCount < 6 && !endsWithPunctuation)
     ) {
-      // 合并
       currentChunk = combined;
     } else {
-      // 输出当前片段，开始新片段
       optimizedChunks.push(currentChunk);
       currentChunk = cleanSeg;
     }
   });
   if (currentChunk) optimizedChunks.push(currentChunk);
 
-  // 4. 最后检查：如果还是有超长片段（>20词），强制按长度分割
-  const result: string[] = [];
-  optimizedChunks.forEach(chunk => {
+  // 5. 超长强制按长度分割
+  const lengthSplit: string[] = [];
+  optimizedChunks.forEach((chunk) => {
     if (chunk.split(/\s+/).length > 20) {
       const words = chunk.split(/\s+/);
-      // 每 12 个词一组
       for (let i = 0; i < words.length; i += 12) {
         const slice = words.slice(i, i + 12).join(' ');
-        if (slice) result.push(slice);
+        if (slice) lengthSplit.push(slice);
       }
     } else {
-      result.push(chunk);
+      lengthSplit.push(chunk);
     }
   });
 
-  return result.filter(s => s.trim().length > 0);
+  // 6. 还原被保护的固定搭配
+  const result = lengthSplit.map((chunk) => {
+    let s = chunk;
+    protectedSegments.forEach(({ token, original }) => {
+      s = s.replace(token, original);
+    });
+    return s;
+  });
+
+  return result.filter((s) => s.trim().length > 0);
 };
