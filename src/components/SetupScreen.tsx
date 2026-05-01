@@ -3,6 +3,7 @@ import { FileText, ArrowRight, Loader2, Mic, Camera, Image, Book, ClipboardList 
 import { StudentInfo } from './StudentInfo';
 import { getPendingSuggestionTaskLocal, updatePendingSuggestionTaskStatusLocal, syncSuggestionTaskStatusToSupabase } from '../utils/suggestionTaskManager';
 import { supabase } from '../lib/supabase';
+import type { DictationDifficulty } from '../utils/textProcessing';
 // 引入 OCR 库
 import Tesseract from 'tesseract.js';
 
@@ -19,6 +20,8 @@ interface SetupScreenProps {
     assignmentTitle?: string;
     /** 作业对应的 dictation_materials.id，用于 TTS 缓存 */
     libraryMaterialId?: string;
+    /** 听写难度：影响句子拆分粒度 */
+    difficulty?: DictationDifficulty;
   }) => void;
   hasLatestReport?: boolean;
   latestReportAt?: string;
@@ -54,6 +57,18 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
   const [studentName, setStudentName] = useState('');
   const [studentNumber, setStudentNumber] = useState('');
   const [className, setClassName] = useState('');
+
+  // 听写难度（持久化到 localStorage）
+  const [difficulty, setDifficulty] = useState<DictationDifficulty>(() => {
+    try {
+      const saved = localStorage.getItem('dictation_difficulty');
+      if (saved === 'easy' || saved === 'normal' || saved === 'hard') return saved;
+    } catch { /* ignore */ }
+    return 'normal';
+  });
+  useEffect(() => {
+    try { localStorage.setItem('dictation_difficulty', difficulty); } catch { /* ignore */ }
+  }, [difficulty]);
   const [pendingTask, setPendingTask] = useState<ReturnType<typeof getPendingSuggestionTaskLocal>>(null);
 
   // 班级作业
@@ -429,6 +444,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
 
         {mode === 'text' ? (
           <div className="space-y-4">
+            <DifficultySelector value={difficulty} onChange={setDifficulty} />
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -448,6 +464,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
                     className,
                     inputMethod: 'text',
                     libraryMaterialId: initialLibraryMaterialId || undefined,
+                    difficulty,
                   });
                 }}
                 disabled={!text.trim()}
@@ -501,7 +518,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
                       return;
                     }
                     setMode('text');
-                    setTimeout(() => onStart(text, { studentName, studentNumber, className, inputMethod: 'voice' }), 300);
+                    setTimeout(() => onStart(text, { studentName, studentNumber, className, inputMethod: 'voice', difficulty }), 300);
                   }}
                   className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-8 py-3 rounded-lg font-semibold transition-all shadow-md"
                 >
@@ -554,7 +571,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
                         alert('请先填写学生信息（姓名和学号）');
                         return;
                       }
-                      onStart(text, { studentName, studentNumber, className, inputMethod: 'image' });
+                      onStart(text, { studentName, studentNumber, className, inputMethod: 'image', difficulty });
                     }}
                     disabled={!text.trim()}
                     className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-8 py-3 rounded-lg font-semibold transition-all shadow-md disabled:opacity-50"
@@ -585,6 +602,87 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
           <h3 className="font-semibold text-slate-900">多维报告</h3>
           <p className="text-sm text-slate-500 mt-1">生成详细的学习报告，见证你的进步</p>
         </div>
+      </div>
+    </div>
+  );
+};
+
+// ── 难度选择器 ────────────────────────────────────────────
+interface DifficultySelectorProps {
+  value: DictationDifficulty;
+  onChange: (v: DictationDifficulty) => void;
+}
+
+const DIFFICULTY_OPTIONS: {
+  id: DictationDifficulty;
+  label: string;
+  desc: string;
+  example: string;
+  color: { active: string; idle: string; ring: string };
+}[] = [
+  {
+    id: 'easy',
+    label: '入门',
+    desc: '短句精听，每句 5–8 词',
+    example: '适合听力薄弱、想踏实练听清的学生',
+    color: {
+      active: 'bg-emerald-50 border-emerald-400 text-emerald-700',
+      idle: 'border-slate-200 hover:border-emerald-200 hover:bg-emerald-50/40',
+      ring: 'focus-visible:ring-emerald-300',
+    },
+  },
+  {
+    id: 'normal',
+    label: '标准',
+    desc: '完整意群，每句 10–14 词',
+    example: '默认推荐，平衡训练量与认知负担',
+    color: {
+      active: 'bg-blue-50 border-blue-400 text-blue-700',
+      idle: 'border-slate-200 hover:border-blue-200 hover:bg-blue-50/40',
+      ring: 'focus-visible:ring-blue-300',
+    },
+  },
+  {
+    id: 'hard',
+    label: '挑战',
+    desc: '长句记忆，尽量保持整句',
+    example: '适合应试、追求长句记忆与全句理解的学生',
+    color: {
+      active: 'bg-purple-50 border-purple-400 text-purple-700',
+      idle: 'border-slate-200 hover:border-purple-200 hover:bg-purple-50/40',
+      ring: 'focus-visible:ring-purple-300',
+    },
+  },
+];
+
+const DifficultySelector: React.FC<DifficultySelectorProps> = ({ value, onChange }) => {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50/40 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-slate-700">听写难度</h3>
+        <span className="text-xs text-slate-400">影响每句的拆分长度</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {DIFFICULTY_OPTIONS.map(opt => {
+          const active = value === opt.id;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => onChange(opt.id)}
+              className={`relative text-left p-3 rounded-lg border transition-all outline-none focus-visible:ring-2 ${opt.color.ring} ${
+                active ? `${opt.color.active} shadow-sm` : `bg-white ${opt.color.idle} text-slate-700`
+              }`}
+            >
+              <div className="font-bold text-sm flex items-center justify-between">
+                {opt.label}
+                {active && <span className="text-xs">✓</span>}
+              </div>
+              <div className={`text-xs mt-1 ${active ? '' : 'text-slate-500'}`}>{opt.desc}</div>
+              <div className="text-[11px] mt-1 text-slate-400 leading-snug">{opt.example}</div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

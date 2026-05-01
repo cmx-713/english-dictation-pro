@@ -7,9 +7,53 @@ export interface Sentence {
   isCompleted: boolean;
 }
 
+// 难度模式：影响分句的粒度
+export type DictationDifficulty = 'easy' | 'normal' | 'hard';
+
+// 难度对应的拆分参数
+interface DifficultyConfig {
+  splitMaxWords: number;        // 超过多少词触发意群拆分
+  splitMaxChars: number;        // 超过多少字符触发意群拆分
+  strongConjMinWords: number;   // 强连词分割的最小词数
+  weakConjMinWords: number;     // 弱连词分割的最小词数
+  weakConjMinSide: number;      // 弱连词分割后两侧的最小词数
+  mergeMinChunk: number;        // 当前累积片段过短的合并阈值
+  mergeShortSeg: number;        // 短片段合并的阈值
+  forceSplitWords: number;      // 超长强制拆分的阈值
+  forceSplitChunk: number;      // 强制拆分时每段的目标词数
+}
+
+const DIFFICULTY_PRESETS: Record<DictationDifficulty, DifficultyConfig> = {
+  // 入门：句子短、便于精听
+  easy: {
+    splitMaxWords: 8, splitMaxChars: 50,
+    strongConjMinWords: 7, weakConjMinWords: 9, weakConjMinSide: 4,
+    mergeMinChunk: 3, mergeShortSeg: 4,
+    forceSplitWords: 12, forceSplitChunk: 8,
+  },
+  // 标准：意群完整、长度适中
+  normal: {
+    splitMaxWords: 12, splitMaxChars: 80,
+    strongConjMinWords: 10, weakConjMinWords: 14, weakConjMinSide: 5,
+    mergeMinChunk: 5, mergeShortSeg: 6,
+    forceSplitWords: 20, forceSplitChunk: 12,
+  },
+  // 挑战：尽量保持整句、训练长句记忆
+  hard: {
+    splitMaxWords: 22, splitMaxChars: 150,
+    strongConjMinWords: 18, weakConjMinWords: 25, weakConjMinSide: 8,
+    mergeMinChunk: 8, mergeShortSeg: 10,
+    forceSplitWords: 35, forceSplitChunk: 22,
+  },
+};
+
 // 智能分句：根据标点和意群分割文本
-export const splitTextIntoSentences = (text: string): Sentence[] => {
+export const splitTextIntoSentences = (
+  text: string,
+  difficulty: DictationDifficulty = 'normal'
+): Sentence[] => {
   if (!text) return [];
+  const cfg = DIFFICULTY_PRESETS[difficulty] || DIFFICULTY_PRESETS.normal;
 
   // 标准化空格
   const cleanText = text.replace(/\s+/g, ' ').trim();
@@ -44,8 +88,8 @@ export const splitTextIntoSentences = (text: string): Sentence[] => {
   // 第二步：对长句子进行意群分割
   const finalSegments: string[] = [];
   sentences.forEach(sentence => {
-    if (shouldSplitByMeaningGroup(sentence)) {
-      const chunks = splitByMeaningGroup(sentence);
+    if (shouldSplitByMeaningGroup(sentence, cfg)) {
+      const chunks = splitByMeaningGroup(sentence, cfg);
       finalSegments.push(...chunks);
     } else {
       finalSegments.push(sentence);
@@ -63,11 +107,10 @@ export const splitTextIntoSentences = (text: string): Sentence[] => {
 };
 
 // 判断是否需要按意群分割（长句子）
-const shouldSplitByMeaningGroup = (sentence: string): boolean => {
+const shouldSplitByMeaningGroup = (sentence: string, cfg: DifficultyConfig): boolean => {
   const wordCount = sentence.split(/\s+/).length;
   const charCount = sentence.length;
-  // 超过12个单词或80个字符的句子需要分割（降低阈值，更积极地分割）
-  return wordCount > 12 || charCount > 80;
+  return wordCount > cfg.splitMaxWords || charCount > cfg.splitMaxChars;
 };
 
 // ── 不可拆分的固定搭配（regex 列表）─────────────────────
@@ -119,7 +162,7 @@ const STRONG_CONJUNCTIONS =
 const WEAK_CONJUNCTIONS = /\s+(but|and|or|so|yet|nor)\b/i;
 
 // 按意群分割长句子
-const splitByMeaningGroup = (sentence: string): string[] => {
+const splitByMeaningGroup = (sentence: string, cfg: DifficultyConfig): string[] => {
   // 0. 保护固定搭配：用占位符替换，分割完后再还原
   const protectedSegments: { token: string; original: string }[] = [];
   let protectedSentence = sentence;
@@ -146,10 +189,10 @@ const splitByMeaningGroup = (sentence: string): string[] => {
     }
   }
 
-  // 2. 强连词分割（because/although 等明确从句边界，>10 词时切）
+  // 2. 强连词分割（because/although 等明确从句边界）
   const splitByStrong: string[] = [];
   mergedSegments.forEach((seg) => {
-    if (seg.split(/\s+/).length > 10 && STRONG_CONJUNCTIONS.test(seg)) {
+    if (seg.split(/\s+/).length > cfg.strongConjMinWords && STRONG_CONJUNCTIONS.test(seg)) {
       const safe = seg.replace(STRONG_CONJUNCTIONS, (m) => `\u0001S\u0001${m}`);
       splitByStrong.push(...safe.split('\u0001S\u0001').filter((s) => s.trim()));
     } else {
@@ -157,18 +200,18 @@ const splitByMeaningGroup = (sentence: string): string[] => {
     }
   });
 
-  // 3. 弱连词分割（and/or/but 等，要求段落 >14 词，且分割后两侧都 ≥5 词）
+  // 3. 弱连词分割（and/or/but 等，要求段落足够长，且两侧都 ≥ minSide 词）
   const splitByWeak: string[] = [];
   splitByStrong.forEach((seg) => {
     const wordCount = seg.split(/\s+/).length;
-    if (wordCount > 14) {
+    if (wordCount > cfg.weakConjMinWords) {
       const match = WEAK_CONJUNCTIONS.exec(seg);
       if (match && typeof match.index === 'number') {
         const left = seg.slice(0, match.index).trim();
         const right = seg.slice(match.index).trim();
         if (
-          left.split(/\s+/).length >= 5 &&
-          right.split(/\s+/).length >= 5
+          left.split(/\s+/).length >= cfg.weakConjMinSide &&
+          right.split(/\s+/).length >= cfg.weakConjMinSide
         ) {
           splitByWeak.push(left, right);
           return;
@@ -192,8 +235,8 @@ const splitByMeaningGroup = (sentence: string): string[] => {
     if (!currentChunk) {
       currentChunk = cleanSeg;
     } else if (
-      currentChunk.split(/\s+/).length < 5 ||
-      (segWordCount < 6 && !endsWithPunctuation)
+      currentChunk.split(/\s+/).length < cfg.mergeMinChunk ||
+      (segWordCount < cfg.mergeShortSeg && !endsWithPunctuation)
     ) {
       currentChunk = combined;
     } else {
@@ -206,10 +249,10 @@ const splitByMeaningGroup = (sentence: string): string[] => {
   // 5. 超长强制按长度分割
   const lengthSplit: string[] = [];
   optimizedChunks.forEach((chunk) => {
-    if (chunk.split(/\s+/).length > 20) {
+    if (chunk.split(/\s+/).length > cfg.forceSplitWords) {
       const words = chunk.split(/\s+/);
-      for (let i = 0; i < words.length; i += 12) {
-        const slice = words.slice(i, i + 12).join(' ');
+      for (let i = 0; i < words.length; i += cfg.forceSplitChunk) {
+        const slice = words.slice(i, i + cfg.forceSplitChunk).join(' ');
         if (slice) lengthSplit.push(slice);
       }
     } else {

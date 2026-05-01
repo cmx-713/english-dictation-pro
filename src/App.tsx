@@ -85,6 +85,8 @@ function App() {
   } | null>(null);
   /** 当前练习是否关联素材库 material（用于 TTS 缓存；作业同 material_id） */
   const [practiceLibraryMaterialId, setPracticeLibraryMaterialId] = useState<string | null>(null);
+  /** 当前练习的难度（影响分句粒度） */
+  const [practiceDifficulty, setPracticeDifficulty] = useState<import('./utils/textProcessing').DictationDifficulty>('normal');
   /** 从听力素材库点选后缓存，用于与首页文本比对是否被改动 */
   const [libraryPickContext, setLibraryPickContext] = useState<{ id: string; content: string } | null>(null);
 
@@ -127,6 +129,7 @@ function App() {
       assignmentId?: string;
       assignmentTitle?: string;
       libraryMaterialId?: string;
+      difficulty?: import('./utils/textProcessing').DictationDifficulty;
     }
   ) => {
     setRawText(text);
@@ -143,6 +146,7 @@ function App() {
         ? libraryPickContext.id
         : null;
     setPracticeLibraryMaterialId(libFromMeta || libFromPick || null);
+    if (metadata?.difficulty) setPracticeDifficulty(metadata.difficulty);
 
     if (metadata) {
       setStudentMetadata(metadata);
@@ -255,6 +259,7 @@ function App() {
               onBack={handleRestart}
               isAssignmentMode={Boolean(studentMetadata?.assignmentId)}
               libraryMaterialId={practiceLibraryMaterialId}
+              initialDifficulty={practiceDifficulty}
             />
           )}
 

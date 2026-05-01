@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, CheckCircle, Eye, EyeOff, MessageSquare, Mic, ArrowLeft, ChevronRight } from 'lucide-react';
-import { Sentence, splitTextIntoSentences } from '../utils/textProcessing';
+import { Sentence, splitTextIntoSentences, DictationDifficulty } from '../utils/textProcessing';
 import { DictationCard } from './DictationCard';
 import { useSpeech } from '../hooks/useSpeech';
 import { DiffResult } from '../utils/diffLogic';
@@ -15,6 +15,8 @@ interface PracticeScreenProps {
   isAssignmentMode?: boolean;
   /** dictation_materials.id：有则对本练习启用 OpenAI TTS 缓存（与作业/素材库一致） */
   libraryMaterialId?: string | null;
+  /** 听写难度：影响句子拆分粒度 */
+  initialDifficulty?: DictationDifficulty;
 }
 
 export interface SentenceResult {
@@ -39,6 +41,7 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({
   onBack,
   isAssignmentMode = false,
   libraryMaterialId = null,
+  initialDifficulty = 'normal',
 }) => {
   const [sentences, setSentences] = useState<Sentence[]>([]);
   const [results, setResults] = useState<Map<string, SentenceResult>>(new Map());
@@ -46,14 +49,15 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({
   const [speechRate, setSpeechRate] = useState(1.0);
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [aiPanelWidth, setAiPanelWidth] = useState(384);
+  const [difficulty, setDifficulty] = useState<DictationDifficulty>(initialDifficulty);
 
 
   const { voices, selectedVoice, setSelectedVoice, speak, cancel, isPlaying, isSupported, error } = useSpeech();
 
   useEffect(() => {
-    const s = splitTextIntoSentences(rawText);
+    const s = splitTextIntoSentences(rawText, difficulty);
     setSentences(s);
-  }, [rawText]);
+  }, [rawText, difficulty]);
 
   const handlePlayAll = () => {
     if (isPlaying) {
@@ -249,6 +253,19 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({
               />
             </div>
 
+            {/* 难度切换：句子太长？切到入门模式重切剩余句子 */}
+            <DifficultySwitchControl
+              value={difficulty}
+              onChange={(next) => {
+                if (next === difficulty) return;
+                if (results.size > 0) {
+                  if (!confirm('切换难度将丢失当前已完成的句子记录，确定要切换吗？')) return;
+                  setResults(new Map());
+                }
+                setDifficulty(next);
+              }}
+            />
+
             <div className="flex items-center gap-2 border border-gray-200 rounded-lg px-2 bg-gray-50 h-10">
               <Mic size={14} className="text-gray-500 ml-1" />
               <select
@@ -330,6 +347,49 @@ export const PracticeScreen: React.FC<PracticeScreenProps> = ({
         onPanelWidthChange={setAiPanelWidth}
 
       />
+    </div>
+  );
+};
+
+// ── 难度切换控件（练习中使用）────────────────────────────
+const DIFF_LABEL: Record<DictationDifficulty, string> = {
+  easy: '入门',
+  normal: '标准',
+  hard: '挑战',
+};
+const DIFF_TIP: Record<DictationDifficulty, string> = {
+  easy: '短句精听',
+  normal: '完整意群',
+  hard: '长句记忆',
+};
+
+const DifficultySwitchControl: React.FC<{
+  value: DictationDifficulty;
+  onChange: (v: DictationDifficulty) => void;
+}> = ({ value, onChange }) => {
+  return (
+    <div
+      className="flex items-center gap-1 bg-gray-50 border border-gray-100 rounded-lg px-2 h-10"
+      title="切换难度会按新的拆分粒度重新分句"
+    >
+      <span className="text-xs text-gray-500 font-medium pr-1">难度</span>
+      {(['easy', 'normal', 'hard'] as DictationDifficulty[]).map((d) => {
+        const active = value === d;
+        return (
+          <button
+            key={d}
+            onClick={() => onChange(d)}
+            className={`text-xs font-medium px-2 py-1 rounded transition-colors ${
+              active
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-600 hover:text-blue-600 hover:bg-blue-50'
+            }`}
+            title={DIFF_TIP[d]}
+          >
+            {DIFF_LABEL[d]}
+          </button>
+        );
+      })}
     </div>
   );
 };
