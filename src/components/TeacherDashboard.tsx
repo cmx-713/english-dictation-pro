@@ -152,6 +152,23 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [allSubmissionsLoaded, setAllSubmissionsLoaded] = useState(false);
   const [allSubmissionsLoading, setAllSubmissionsLoading] = useState(false);
 
+  // ── 班级周报（完全独立，不影响任何已有功能）──────────────────────────────
+  interface ClassReportData {
+    className: string;
+    generatedAt: string;
+    weekRange: string;
+    assignmentStats: { total: number; avgCompletion: number; avgAccuracy: number; suspiciousCount: number };
+    errorDistribution: { A: number; B: number; C: number; D: number; total: number; topSubtypes: Array<{ key: string; label: string; count: number }> };
+    practiceStats: { totalRecords: number; activeStudents: number };
+    inactiveStudents: string[];
+    classTotal: number;
+  }
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [classReport, setClassReport] = useState<ClassReportData | null>(null);
+  const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
+  const [aiSuggestionLoading, setAiSuggestionLoading] = useState(false);
+
   
   // 编辑学生信息的状态
   const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
@@ -434,6 +451,145 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
       setAssignmentHistory(history);
     } catch (e) { console.error(e); }
     finally { setAssignmentsLoading(false); }
+  };
+
+  // ── 生成班级周报 ────────────────────────────────────────────────────────────
+  const REPORT_SUBTYPE_LABELS: Record<string, string> = {
+    A1: '漏冠词', A2: '漏介词', A3: '漏连词', A4: '漏代词', A5: '漏助动词',
+    B1: '连读误判', B2: '弱读误判', B3: '同音混淆', B4: '尾音丢失', B5: '缩读误解',
+    C1: '单词拼错', C2: '大小写', C3: '标点缺失',
+    D1: '时态错误', D2: '单复数', D3: '主谓不一致',
+  };
+
+  const generateClassReport = async (className: string) => {
+    setShowReportModal(true);
+    setReportLoading(true);
+    setClassReport(null);
+    setAiSuggestion(null);
+
+    try {
+      const since = new Date();
+      since.setDate(since.getDate() - 7);
+      const weekRange = `${since.toLocaleDateString('zh-CN')} — ${new Date().toLocaleDateString('zh-CN')}`;
+
+      // 1. 查询近7天该班级的练习记录（含 error_summary）
+      const { data: records } = await supabase
+        .from('practice_records')
+        .select('student_name, error_summary, created_at')
+        .eq('class_name', className)
+        .gte('created_at', since.toISOString());
+
+      // 2. 计算错误类型分布
+      const errorTotals = { A: 0, B: 0, C: 0, D: 0 };
+      const subtypeCounts: Record<string, number> = {};
+      (records || []).forEach((r: any) => {
+        const es = r.error_summary;
+        if (!es) return;
+        if (es.by_category) {
+          Object.entries(es.by_category).forEach(([k, v]) => {
+            if (k in errorTotals) (errorTotals as any)[k] += Number(v) || 0;
+          });
+        }
+        if (es.by_subtype) {
+          Object.entries(es.by_subtype).forEach(([k, v]) => {
+            subtypeCounts[k] = (subtypeCounts[k] || 0) + (Number(v) || 0);
+          });
+        }
+      });
+      const errorTotal = Object.values(errorTotals).reduce((s, v) => s + v, 0);
+      const topSubtypes = Object.entries(subtypeCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([key, count]) => ({ key, label: REPORT_SUBTYPE_LABELS[key] || key, count }));
+
+      // 3. 活跃/不活跃学生
+      const activeNames = new Set((records || []).map((r: any) => r.student_name as string));
+      const classStudents = students.filter(s => s.class_name === className);
+      const inactiveStudents = classStudents
+        .filter(s => !activeNames.has(s.student_name))
+        .map(s => s.student_name);
+      const classInfo = classes.find(c => c.class_name === className);
+      const classTotal = classInfo?.student_count ?? classStudents.length;
+
+      // 4. 作业统计（复用已加载的 assignmentSubmissions）
+      const classAssignments = [...activeAssignments, ...assignmentHistory].filter(a => a.class_name === className);
+      let totalSubs = 0, totalAccSum = 0, suspiciousCount = 0;
+      classAssignments.forEach(a => {
+        const subs = assignmentSubmissions[a.id] || [];
+        totalSubs += subs.length;
+        totalAccSum += subs.reduce((s, sub) => s + (sub.accuracy_rate ?? 0), 0);
+        suspiciousCount += subs.filter(s => s.is_suspicious).length;
+      });
+      const avgAccuracy = totalSubs > 0 ? Math.round(totalAccSum / totalSubs) : 0;
+      const avgCompletion = classAssignments.length > 0 && classTotal > 0
+        ? Math.round((totalSubs / classAssignments.length / classTotal) * 100)
+        : 0;
+
+      const report: ClassReportData = {
+        className, generatedAt: new Date().toLocaleString('zh-CN'), weekRange,
+        assignmentStats: { total: classAssignments.length, avgCompletion, avgAccuracy, suspiciousCount },
+        errorDistribution: { ...errorTotals, total: errorTotal, topSubtypes },
+        practiceStats: { totalRecords: (records || []).length, activeStudents: activeNames.size },
+        inactiveStudents, classTotal,
+      };
+      setClassReport(report);
+
+      // 5. 生成 AI 建议（单独调用，失败不影响数据展示）
+      const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
+      const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ?? '';
+      if (supabaseUrl && supabaseAnonKey) {
+        setAiSuggestionLoading(true);
+        const dominant = Object.entries(errorTotals).sort((a, b) => b[1] - a[1])[0];
+        const dominantLabel = dominant[0] === 'A' ? 'A类漏词' : dominant[0] === 'B' ? 'B类辨音/连读' : dominant[0] === 'C' ? 'C类拼写' : 'D类语法';
+        const contextText = `
+班级：${className}，统计周期：${weekRange}
+作业情况：共 ${classAssignments.length} 份作业，平均完成率 ${avgCompletion}%，平均正确率 ${avgAccuracy}%，可疑提交 ${suspiciousCount} 份
+练习活跃度：近7天 ${activeNames.size} 人有练习记录（共 ${classTotal} 人），不活跃 ${inactiveStudents.length} 人
+错误分布：A漏词 ${errorTotals.A} 次，B辨音 ${errorTotals.B} 次，C拼写 ${errorTotals.C} 次，D语法 ${errorTotals.D} 次
+高频弱点：${topSubtypes.map(t => `${t.label}(${t.count}次)`).join('、') || '暂无数据'}
+最突出问题：${dominantLabel}（占总错误 ${errorTotal > 0 ? Math.round(dominant[1] / errorTotal * 100) : 0}%）
+`.trim();
+
+        fetch(`${supabaseUrl}/functions/v1/ai-chat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': supabaseAnonKey,
+            'Authorization': `Bearer ${supabaseAnonKey}`,
+          },
+          body: JSON.stringify({
+            messages: [
+              {
+                role: 'system',
+                content: `你是经验丰富的英语听力教研员，根据班级练习数据给出具体、可执行的教学建议。
+要求：
+1. 输出三个部分，用固定标题（Markdown 加粗）：**本周主要问题** / **教学建议** / **下周重点**
+2. 每部分 1-2 句，总字数不超过 150 字
+3. 建议要具体：点名高频错误类型，建议具体练习方式（如：课堂专项练弱读词、布置连读音频材料）
+4. 如果数据很少（练习次数 < 5），说明数据不足并给出基础建议`,
+              },
+              { role: 'user', content: contextText },
+            ],
+            stream: false,
+            temperature: 0.3,
+          }),
+        })
+          .then(async (res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+            setAiSuggestion(data?.choices?.[0]?.message?.content ?? null);
+          })
+          .catch((err) => {
+            console.warn('[ClassReport] AI 建议生成失败:', err);
+            setAiSuggestion(null);
+          })
+          .finally(() => setAiSuggestionLoading(false));
+      }
+    } catch (e) {
+      console.error('[ClassReport] 生成失败:', e);
+    } finally {
+      setReportLoading(false);
+    }
   };
 
   // 批量加载所有作业的提交数据（看板用）
@@ -1840,7 +1996,27 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
               {/* 顶部按钮行 */}
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-bold text-slate-900">作业看板</h3>
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap justify-end">
+                  {/* 班级周报按钮 */}
+                  {classes.length === 1 ? (
+                    <button
+                      onClick={() => void generateClassReport(classes[0].class_name)}
+                      className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1"
+                    >
+                      <BarChart3 className="w-3 h-3" /> 生成班级周报
+                    </button>
+                  ) : classes.length > 1 ? (
+                    <select
+                      className="text-xs px-2 py-1.5 border border-indigo-300 bg-indigo-50 text-indigo-700 rounded-lg cursor-pointer hover:bg-indigo-100 transition-colors"
+                      defaultValue=""
+                      onChange={(e) => { if (e.target.value) { void generateClassReport(e.target.value); e.target.value = ''; } }}
+                    >
+                      <option value="" disabled>📊 生成班级周报…</option>
+                      {classes.map(c => (
+                        <option key={c.class_name} value={c.class_name}>{c.class_name}</option>
+                      ))}
+                    </select>
+                  ) : null}
                   <button
                     onClick={() => {
                       setAllSubmissionsLoaded(false);
@@ -2231,6 +2407,160 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
       )}
 
       {/* 编辑学生班级对话框 */}
+      {/* ── 班级周报模态框 ─────────────────────────────────────────────────── */}
+      {showReportModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) setShowReportModal(false); }}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            {/* 头部 */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">班级周报</h3>
+                {classReport && <p className="text-xs text-slate-400 mt-0.5">{classReport.className} · {classReport.weekRange}</p>}
+              </div>
+              <button onClick={() => setShowReportModal(false)} className="p-2 hover:bg-slate-100 rounded-lg">
+                <X className="w-4 h-4 text-slate-500" />
+              </button>
+            </div>
+
+            {/* 内容（可滚动）*/}
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+              {reportLoading ? (
+                <div className="flex flex-col items-center gap-3 py-16 text-slate-400">
+                  <span className="w-8 h-8 border-3 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-sm">正在汇总班级数据…</p>
+                </div>
+              ) : classReport ? (
+                <>
+                  {/* ① 作业完成情况 */}
+                  <section>
+                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">📋 作业完成情况</h4>
+                    <div className="grid grid-cols-4 gap-3">
+                      {[
+                        { label: '作业数', value: String(classReport.assignmentStats.total), color: 'text-blue-600' },
+                        { label: '平均完成率', value: classReport.assignmentStats.avgCompletion > 0 ? `${classReport.assignmentStats.avgCompletion}%` : '—', color: classReport.assignmentStats.avgCompletion >= 80 ? 'text-emerald-600' : classReport.assignmentStats.avgCompletion >= 50 ? 'text-amber-600' : 'text-red-500' },
+                        { label: '平均正确率', value: classReport.assignmentStats.avgAccuracy > 0 ? `${classReport.assignmentStats.avgAccuracy}%` : '—', color: classReport.assignmentStats.avgAccuracy >= 80 ? 'text-emerald-600' : classReport.assignmentStats.avgAccuracy >= 60 ? 'text-amber-600' : 'text-red-500' },
+                        { label: '可疑提交', value: String(classReport.assignmentStats.suspiciousCount), color: classReport.assignmentStats.suspiciousCount > 0 ? 'text-red-500' : 'text-slate-400' },
+                      ].map(item => (
+                        <div key={item.label} className="bg-slate-50 rounded-xl p-3 text-center">
+                          <p className={`text-xl font-bold ${item.color}`}>{item.value}</p>
+                          <p className="text-[11px] text-slate-500 mt-0.5">{item.label}</p>
+                        </div>
+                      ))}
+                    </div>
+                    {classReport.assignmentStats.total === 0 && (
+                      <p className="text-xs text-slate-400 mt-2">本班暂无作业记录，若数据已加载可刷新后再试。</p>
+                    )}
+                  </section>
+
+                  {/* ② 听力弱点分布 */}
+                  <section>
+                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">📊 听力错误分布（近7天练习）</h4>
+                    {classReport.errorDistribution.total === 0 ? (
+                      <p className="text-sm text-slate-400">近7天暂无练习数据。</p>
+                    ) : (
+                      <>
+                        <p className="text-xs text-slate-500 mb-2">共 {classReport.practiceStats.totalRecords} 次练习记录，{classReport.practiceStats.activeStudents} 名学生活跃</p>
+                        <div className="space-y-1.5">
+                          {([
+                            { key: 'A', label: 'A 漏词', color: 'bg-red-400' },
+                            { key: 'B', label: 'B 辨音', color: 'bg-orange-400' },
+                            { key: 'C', label: 'C 拼写', color: 'bg-amber-400' },
+                            { key: 'D', label: 'D 语法', color: 'bg-blue-400' },
+                          ] as const).map(({ key, label, color }) => {
+                            const count = classReport.errorDistribution[key];
+                            const pct = classReport.errorDistribution.total > 0 ? Math.round(count / classReport.errorDistribution.total * 100) : 0;
+                            return (
+                              <div key={key} className="flex items-center gap-3">
+                                <span className="w-12 text-xs font-medium text-slate-600 shrink-0">{label}</span>
+                                <div className="flex-1 h-4 bg-slate-100 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${color} transition-all duration-500`} style={{ width: `${Math.max(pct, count > 0 ? 3 : 0)}%` }} />
+                                </div>
+                                <span className="w-16 text-right text-xs text-slate-500 shrink-0">{count} 次 ({pct}%)</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {classReport.errorDistribution.topSubtypes.length > 0 && (
+                          <div className="mt-3 flex flex-wrap gap-1.5">
+                            <span className="text-xs text-slate-500 mr-1">高频弱点：</span>
+                            {classReport.errorDistribution.topSubtypes.map(t => (
+                              <span key={t.key} className="text-xs px-2 py-0.5 bg-orange-50 border border-orange-200 text-orange-700 rounded-full">
+                                {t.label} ({t.count})
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </section>
+
+                  {/* ③ 活跃度 / 不活跃学生 */}
+                  <section>
+                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">👥 练习活跃度</h4>
+                    <div className="flex items-center gap-4 mb-2">
+                      <div className="flex-1 h-3 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-400 rounded-full transition-all duration-500"
+                          style={{ width: classReport.classTotal > 0 ? `${Math.round(classReport.practiceStats.activeStudents / classReport.classTotal * 100)}%` : '0%' }}
+                        />
+                      </div>
+                      <span className="text-xs text-slate-600 shrink-0">
+                        {classReport.practiceStats.activeStudents}/{classReport.classTotal} 人活跃
+                      </span>
+                    </div>
+                    {classReport.inactiveStudents.length > 0 ? (
+                      <div>
+                        <p className="text-xs text-red-500 font-medium mb-1.5">⚠ 近7天零练习（{classReport.inactiveStudents.length} 人）：</p>
+                        <div className="flex flex-wrap gap-1">
+                          {classReport.inactiveStudents.map(name => (
+                            <span key={name} className="text-xs px-2 py-0.5 bg-red-50 border border-red-200 text-red-600 rounded-full">{name}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : classReport.classTotal > 0 ? (
+                      <p className="text-xs text-emerald-600">全班近7天均有练习记录 🎉</p>
+                    ) : (
+                      <p className="text-xs text-slate-400">请先在「学生」标签页录入班级名单以显示活跃度。</p>
+                    )}
+                  </section>
+
+                  {/* ④ AI 建议 */}
+                  <section>
+                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">💡 AI 教学建议</h4>
+                    {aiSuggestionLoading ? (
+                      <div className="flex items-center gap-2 text-sm text-indigo-600 bg-indigo-50 rounded-xl px-4 py-3">
+                        <span className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                        AI 正在生成教学建议…
+                      </div>
+                    ) : aiSuggestion ? (
+                      <div className="bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3 text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">
+                        {aiSuggestion.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+                          part.startsWith('**') && part.endsWith('**')
+                            ? <strong key={i} className="text-indigo-700">{part.slice(2, -2)}</strong>
+                            : <span key={i}>{part}</span>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400">AI 建议未能生成，请检查网络连接后重试。</p>
+                    )}
+                  </section>
+                </>
+              ) : (
+                <p className="text-sm text-red-500 py-8 text-center">数据加载失败，请关闭后重试。</p>
+              )}
+            </div>
+
+            {/* 底部 */}
+            {classReport && (
+              <div className="px-6 py-3 border-t border-slate-100 flex items-center justify-between">
+                <p className="text-xs text-slate-400">生成于 {classReport.generatedAt}</p>
+                <button onClick={() => setShowReportModal(false)} className="text-xs px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-600 transition-colors">关闭</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {editingStudent && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
