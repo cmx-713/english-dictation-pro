@@ -138,6 +138,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [assignMaterialTitle, setAssignMaterialTitle] = useState('');
   const [assignDueDate, setAssignDueDate] = useState('');
   const [assignSaving, setAssignSaving] = useState(false);
+  interface AssignWeakness {
+    topSubtypes: Array<{ key: string; label: string; count: number }>;
+    loading: boolean;
+    hasData: boolean;
+  }
+  const [assignClassWeakness, setAssignClassWeakness] = useState<AssignWeakness | null>(null);
   const [libraryMaterials, setLibraryMaterials] = useState<LibraryMaterial[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [activeAssignments, setActiveAssignments] = useState<ClassAssignment[]>([]);
@@ -233,6 +239,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     fetchData();
     void loadActiveAssignments();
   }, []);
+
+  // 作业弹框打开且选定班级时，自动拉取该班近两周弱点
+  useEffect(() => {
+    if (showAssignModal && assignClass) {
+      void loadAssignClassWeakness(assignClass);
+    } else if (!showAssignModal) {
+      setAssignClassWeakness(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAssignModal, assignClass]);
 
   // 更新学生班级
   const updateStudentClass = async () => {
@@ -459,6 +475,42 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     B1: '连读误判', B2: '弱读误判', B3: '同音混淆', B4: '尾音丢失', B5: '缩读误解',
     C1: '单词拼错', C2: '大小写', C3: '标点缺失',
     D1: '时态错误', D2: '单复数', D3: '主谓不一致',
+  };
+
+  // 加载指定班级近两周的高频错误子类型（用于作业推荐）
+  const loadAssignClassWeakness = async (className: string) => {
+    if (!className) { setAssignClassWeakness(null); return; }
+    setAssignClassWeakness({ topSubtypes: [], loading: true, hasData: false });
+    try {
+      const since = new Date();
+      since.setDate(since.getDate() - 14);
+      const { data: records } = await supabase
+        .from('practice_records')
+        .select('error_summary')
+        .eq('class_name', className)
+        .gte('created_at', since.toISOString());
+
+      const subtypeCounts: Record<string, number> = {};
+      (records || []).forEach((r: any) => {
+        const bySubtype = r.error_summary?.by_subtype || {};
+        Object.entries(bySubtype).forEach(([k, v]) => {
+          subtypeCounts[k] = (subtypeCounts[k] || 0) + (Number(v) || 0);
+        });
+      });
+
+      const topSubtypes = Object.entries(subtypeCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([key, count]) => ({ key, label: REPORT_SUBTYPE_LABELS[key] || key, count }));
+
+      setAssignClassWeakness({
+        topSubtypes,
+        loading: false,
+        hasData: (records || []).length > 0,
+      });
+    } catch {
+      setAssignClassWeakness({ topSubtypes: [], loading: false, hasData: false });
+    }
   };
 
   const generateClassReport = async (className: string) => {
@@ -2337,6 +2389,47 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                   ))}
                 </select>
               </div>
+
+              {/* 本班弱点推荐 */}
+              {assignClass && assignClassWeakness && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  {assignClassWeakness.loading ? (
+                    <p className="text-xs text-amber-600 flex items-center gap-1.5">
+                      <span className="w-3 h-3 border border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                      正在分析本班近期弱点…
+                    </p>
+                  ) : assignClassWeakness.hasData && assignClassWeakness.topSubtypes.length > 0 ? (
+                    <div>
+                      <p className="text-xs font-semibold text-amber-700 mb-1.5 flex items-center gap-1">
+                        <TrendingUp className="w-3.5 h-3.5 shrink-0" />
+                        根据本班近两周弱点推荐
+                      </p>
+                      <div className="flex flex-wrap gap-1.5 mb-1.5">
+                        {assignClassWeakness.topSubtypes.map(({ key, label, count }) => (
+                          <span key={key} className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full text-xs font-medium">
+                            <span className="font-bold text-amber-900">{key}</span>
+                            <span>{label}</span>
+                            <span className="text-amber-500 font-normal">×{count}</span>
+                          </span>
+                        ))}
+                      </div>
+                      <p className="text-xs text-amber-600">
+                        💡 建议选择包含上述语言特征的素材，针对性强化薄弱环节
+                      </p>
+                    </div>
+                  ) : !assignClassWeakness.hasData ? (
+                    <p className="text-xs text-amber-600 flex items-center gap-1">
+                      <span>📊</span>
+                      本班近两周暂无练习记录，建议先布置难度适中的基础素材
+                    </p>
+                  ) : (
+                    <p className="text-xs text-amber-600 flex items-center gap-1">
+                      <span>✅</span>
+                      本班近期无明显集中弱点，可按难度自由选材
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* 选素材 */}
               <div>

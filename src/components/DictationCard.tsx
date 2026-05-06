@@ -5,7 +5,7 @@ import { Sentence } from '../utils/textProcessing';
 import { calculateDiff, DiffResult, FeedbackItem, predictErrorReason } from '../utils/diffLogic';
 import { getLlmFeedback } from '../utils/llmFeedback';
 import { isSemanticallyCorrect } from '../utils/textMatcher';
-import { ensureTtsAudioUrl } from '../utils/ttsAudioCache';
+import { ensureTtsAudioUrl, lookupTtsAudioUrl } from '../utils/ttsAudioCache';
 
 interface InputMeta {
   pasted: boolean;
@@ -55,7 +55,8 @@ export const DictationCard: React.FC<DictationCardProps> = ({
 
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [ttsPhase, setTtsPhase] = useState<TtsPhase>(() =>
-    libraryMaterialId?.trim() ? 'loading' : 'speech'
+    // 有 libraryMaterialId：走完整合成流程；无时：先查缓存，初始 loading 等结果
+    'loading'
   );
 
   const totalLength = sentence.text.length;
@@ -70,44 +71,55 @@ export const DictationCard: React.FC<DictationCardProps> = ({
     isDraggingRef.current = isDragging;
   }, [isDragging]);
 
-  // 载入 TTS 缓存（仅绑定 material 时）
+  // 载入 TTS 音频：
+  //   有 libraryMaterialId → 完整流程（查缓存 → 合成 → 上传 → 返回 URL）
+  //   无 libraryMaterialId → 仅查缓存（再练场景命中预热缓存则用 Azure，否则降级 Web Speech）
   useEffect(() => {
     let cancelled = false;
     let fallbackTimer: number | null = null;
-    if (!libraryMaterialId?.trim()) {
-      console.info('[TTS debug] skip cache: missing libraryMaterialId', {
-        sentenceId: sentence.id,
-      });
-      setAudioUrl(null);
-      setTtsPhase('speech');
-      return;
-    }
-    console.info('[TTS debug] start cache lookup', {
-      sentenceId: sentence.id,
-      libraryMaterialId: libraryMaterialId.trim(),
-    });
-    setTtsPhase('loading');
+
     setAudioUrl(null);
-    // 30s 兜底：覆盖排队 + 冷启动 + 合成 + Storage 上传的总时长
-    fallbackTimer = window.setTimeout(() => {
-      if (cancelled) return;
-      setTtsPhase('speech');
-    }, 30000);
-    void ensureTtsAudioUrl({
-      sentenceText: sentence.text,
-      libraryMaterialId: libraryMaterialId.trim(),
-    }).then((url) => {
-      if (cancelled) return;
-      if (fallbackTimer) window.clearTimeout(fallbackTimer);
-      if (url) {
-        console.info('[TTS debug] cache/audio ready', { sentenceId: sentence.id, hasUrl: true });
-        setAudioUrl(url);
-        setTtsPhase('file');
-      } else {
-        console.info('[TTS debug] fallback to speech', { sentenceId: sentence.id, hasUrl: false });
+    setTtsPhase('loading');
+
+    if (libraryMaterialId?.trim()) {
+      // ── 完整合成流程 ──
+      console.info('[TTS debug] start cache lookup', {
+        sentenceId: sentence.id,
+        libraryMaterialId: libraryMaterialId.trim(),
+      });
+      // 30s 兜底：覆盖排队 + 冷启动 + 合成 + Storage 上传的总时长
+      fallbackTimer = window.setTimeout(() => {
+        if (cancelled) return;
         setTtsPhase('speech');
-      }
-    });
+      }, 30000);
+      void ensureTtsAudioUrl({
+        sentenceText: sentence.text,
+        libraryMaterialId: libraryMaterialId.trim(),
+      }).then((url) => {
+        if (cancelled) return;
+        if (fallbackTimer) window.clearTimeout(fallbackTimer);
+        if (url) {
+          setAudioUrl(url);
+          setTtsPhase('file');
+        } else {
+          setTtsPhase('speech');
+        }
+      });
+    } else {
+      // ── 纯缓存查询（再练/自由练习场景） ──
+      console.info('[TTS debug] retry cache lookup (no materialId)', { sentenceId: sentence.id });
+      void lookupTtsAudioUrl(sentence.text).then((url) => {
+        if (cancelled) return;
+        if (url) {
+          setAudioUrl(url);
+          setTtsPhase('file');
+        } else {
+          console.info('[TTS debug] retry cache miss → web speech', { sentenceId: sentence.id });
+          setTtsPhase('speech');
+        }
+      });
+    }
+
     return () => {
       cancelled = true;
       if (fallbackTimer) window.clearTimeout(fallbackTimer);

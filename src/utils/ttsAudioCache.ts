@@ -154,6 +154,35 @@ export interface EnsureTtsAudioOptions {
 }
 
 /**
+ * 纯缓存查询（不合成）：用于再练场景（无 libraryMaterialId），
+ * 若句子已被预热则命中缓存直接返回 URL，否则返回 null 降级 Web Speech。
+ */
+export async function lookupTtsAudioUrl(sentenceText: string): Promise<string | null> {
+  const urlEnv = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+  if (!urlEnv || TTS_PROVIDER === 'none') return null;
+
+  const normalized = normalizeSentenceForTts(sentenceText);
+  if (!normalized) return null;
+
+  try {
+    const hash = await computeTtsContentHash(sentenceText);
+    const { data: row, error } = await supabase
+      .from('tts_audio_cache')
+      .select('public_url')
+      .eq('content_hash', hash)
+      .maybeSingle();
+
+    if (!error && row?.public_url) {
+      console.info('[TTS debug] retry cache hit', { hashPrefix: hash.slice(0, 8) });
+      return row.public_url;
+    }
+  } catch (e) {
+    console.warn('[TTS cache] lookupTtsAudioUrl:', e);
+  }
+  return null;
+}
+
+/**
  * 返回可播放的公开 URL；失败返回 null（调用方降级 Web Speech）
  */
 export async function ensureTtsAudioUrl(opts: EnsureTtsAudioOptions): Promise<string | null> {
