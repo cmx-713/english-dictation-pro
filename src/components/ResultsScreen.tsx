@@ -13,9 +13,10 @@ import {
 import { SentenceResult } from './PracticeScreen';
 import { AIAssistant } from './AIAssistant';
 import { OVERALL_ANALYSIS_SYSTEM_PROMPT } from '../utils/aiPrompts';
-import { Bot, AlertTriangle, ArrowUp, ArrowRight, ArrowDown, CheckCircle2, MessageSquare, ChevronRight } from 'lucide-react';
-import { analyzeErrors, ErrorStats } from '../utils/errorAnalysis';
+import { Bot, AlertTriangle, MessageSquare, ChevronRight } from 'lucide-react';
+import { analyzeErrors } from '../utils/errorAnalysis';
 import { supabase } from '../lib/supabase';
+import { ErrorCharts } from './ErrorCharts';
 
 interface ResultsScreenProps {
   results: SentenceResult[];
@@ -685,10 +686,8 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
                 })()}
               </div>
 
-              <h4 className="font-bold text-slate-800 mb-4 px-2 border-l-4 border-indigo-500">错误类型详细统计 (本地分析)</h4>
-              <div className="overflow-hidden bg-white shadow-sm rounded-xl">
-                <ErrorStatsTable stats={currentErrorStats} />
-              </div>
+              <h4 className="font-bold text-slate-800 mb-4 px-2 border-l-4 border-indigo-500">听力现象频次分析</h4>
+              <ErrorCharts stats={currentErrorStats} weeklyProfile={weeklyProfile} />
             </div>
 
             <div className="mt-8 mb-8 text-left">
@@ -823,72 +822,3 @@ const StatCard = ({ icon, label, value, subtext, bg, border, textColor }: any) =
     </div>
   </div>
 );
-
-const ErrorStatsTable = ({ stats }: { stats: ErrorStats }) => {
-  // Helper to render trend icon
-  const renderTrend = (trend: string) => {
-    switch (trend) {
-      case 'up': return <span className="flex items-center text-red-500 text-xs"><ArrowUp size={12} className="mr-0.5" />上升</span>;
-      case 'down': return <span className="flex items-center text-emerald-500 text-xs"><ArrowDown size={12} className="mr-0.5" />下降</span>;
-      case 'flat': return <span className="flex items-center text-slate-400 text-xs"><ArrowRight size={12} className="mr-0.5" />持平</span>;
-      case 'alert': return <span className="flex items-center text-orange-500 text-xs font-bold"><AlertTriangle size={12} className="mr-0.5" />重点关注</span>;
-      case 'good': return <span className="flex items-center text-emerald-600 text-xs"><CheckCircle2 size={12} className="mr-0.5" />良好</span>;
-      default: return null;
-    }
-  };
-
-  const categories = [
-    { key: 'A', name: 'A类：漏词', color: 'bg-red-50 text-red-700 border-red-100' },
-    { key: 'B', name: 'B类：辨音错误', color: 'bg-orange-50 text-orange-700 border-orange-100' },
-    { key: 'C', name: 'C类：拼写错误', color: 'bg-yellow-50 text-yellow-700 border-yellow-100' },
-    { key: 'D', name: 'D类：语法错误', color: 'bg-blue-50 text-blue-700 border-blue-100' },
-  ];
-
-  // 计算总错误数用于占比
-  let totalErrors = 0;
-  Object.values(stats).forEach(cat => totalErrors += cat.total);
-
-  return (
-    <div className="w-full border border-slate-200 rounded-xl overflow-hidden shadow-sm bg-white">
-      <div className="grid grid-cols-12 bg-slate-50 border-b border-slate-200 p-3 text-xs font-bold text-slate-500">
-        <div className="col-span-5">错误类型</div>
-        <div className="col-span-2 text-center">次数</div>
-        <div className="col-span-2 text-center">占比</div>
-        <div className="col-span-3 text-center">趋势</div>
-      </div>
-
-      {categories.map((catSpec) => {
-        // @ts-ignore
-        const categoryData = stats[catSpec.key as keyof ErrorStats];
-        if (!categoryData) return null;
-
-        return (
-          <div key={catSpec.key}>
-            {/* Category Header */}
-            <div className={`grid grid-cols-12 p-3 border-b border-slate-100 font-bold ${catSpec.color}`}>
-              <div className="col-span-12">{catSpec.name}</div>
-            </div>
-            {/* Subtypes */}
-            {Object.entries(categoryData.subtypes).map(([subKey, subData]: [string, any]) => (
-              <div key={subKey} className="grid grid-cols-12 p-3 border-b border-slate-50 hover:bg-slate-50 transition-colors text-sm items-center">
-                <div className="col-span-5 flex items-center gap-2 pl-4 text-slate-700">
-                  <span className="text-slate-400 font-mono text-xs">{subKey}</span>
-                  <span>{subData.label}</span>
-                </div>
-                <div className="col-span-2 text-center font-mono font-medium text-slate-600">
-                  {subData.count}
-                </div>
-                <div className="col-span-2 text-center text-slate-500 text-xs">
-                  {totalErrors > 0 ? Math.round((subData.count / totalErrors) * 100) : 0}%
-                </div>
-                <div className="col-span-3 flex justify-center">
-                  {renderTrend(subData.trend)}
-                </div>
-              </div>
-            ))}
-          </div>
-        );
-      })}
-    </div>
-  );
-};
