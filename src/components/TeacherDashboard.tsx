@@ -2409,8 +2409,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
       {/* 编辑学生班级对话框 */}
       {/* ── 班级周报模态框 ─────────────────────────────────────────────────── */}
       {showReportModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) setShowReportModal(false); }}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[100] px-4 pt-20 pb-4 overflow-y-auto" onClick={(e) => { if (e.target === e.currentTarget) setShowReportModal(false); }}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col my-auto">
             {/* 头部 */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
               <div>
