@@ -102,7 +102,7 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
   const buildRetryText = (type: 'wrong' | 'linking' | 'spelling'): string => {
     const wrongResults = results.filter((r) => r.accuracy < 100);
     if (wrongResults.length === 0) {
-      return results.map((r) => r.original).filter(Boolean).join('\n');
+      return results.map((r) => r.original).filter(Boolean).join('\n\n');
     }
 
     let selected = wrongResults;
@@ -126,7 +126,7 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
     }
 
     if (selected.length === 0) selected = wrongResults;
-    return selected.map((r) => r.original).filter(Boolean).join('\n');
+    return selected.map((r) => r.original).filter(Boolean).join('\n\n');
   };
 
   // 从错误代码（如 B1, C2）映射到再练类型
@@ -238,7 +238,7 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
     const retryText = (wrongSentences.length > 0
       ? wrongSentences
       : results.map((r) => r.original).filter(Boolean)
-    ).join('\n');
+    ).join('\n\n');
 
     if (!retryText.trim()) {
       alert('未找到可用于再练的句子');

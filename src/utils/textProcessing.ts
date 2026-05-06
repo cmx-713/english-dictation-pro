@@ -55,48 +55,69 @@ export const splitTextIntoSentences = (
   if (!text) return [];
   const cfg = DIFFICULTY_PRESETS[difficulty] || DIFFICULTY_PRESETS.normal;
 
-  // 标准化空格
-  const cleanText = text.replace(/\s+/g, ' ').trim();
+  // 先按"空行"（连续 2 个以上换行）拆成段落，每段独立分句后合并。
+  // 单个 \n 视为排版换行，在段落内被压平成空格（兼容素材库原文格式）。
+  // 再练错题文本用 \n\n 拼接，因此每句会成为独立段落。
+  const paragraphs = text.split(/\n{2,}/).map(p => p.replace(/\n/g, ' ').trim()).filter(p => p.length > 0);
 
-  // 第一步：按照句子终止符分割（. ! ? 等）
-  // 避免常见缩写词的误分割
-  const abbreviations = [
-    'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Prof.', 'Sr.', 'Jr.', 'vs.', 'etc.', 'e.g.', 'i.e.', 'Inc.', 'Ltd.', 'Co.',
-    'St.', 'Ave.', 'Rd.', 'Blvd.', 'Dept.', 'Univ.', 'Capt.', 'Col.', 'Gen.', 'Lt.', 'Maj.', 'Sgt.', 'Rev.', 'Hon.'
-  ];
-  let processedText = cleanText;
+  const allSegments: string[] = [];
 
-  // 暂时替换缩写词中的句号，避免误分割
-  abbreviations.forEach((abbr, idx) => {
-    const placeholder = `<ABB${idx}>`;
-    processedText = processedText.replace(new RegExp(abbr.replace('.', '\\.'), 'gi'), placeholder);
-  });
+  for (const para of paragraphs) {
+    // 段落内标准化空格（只合并行内多余空白，不跨行）
+    const cleanPara = para.replace(/[^\S\n]+/g, ' ').trim();
 
-  // 按句子终止符分割
-  const rawSentences = processedText.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [processedText];
+    // 避免常见缩写词的误分割
+    const abbreviations = [
+      // 称谓
+      'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Prof.', 'Sr.', 'Jr.', 'Rev.', 'Hon.',
+      'Capt.', 'Col.', 'Gen.', 'Lt.', 'Maj.', 'Sgt.',
+      // 地址
+      'St.', 'Ave.', 'Rd.', 'Blvd.',
+      // 机构/法律
+      'Inc.', 'Ltd.', 'Co.', 'Dept.', 'Univ.', 'vs.',
+      // 拉丁/通用
+      'etc.', 'e.g.', 'i.e.', 'No.',
+      // 时间
+      'a.m.', 'p.m.', 'A.M.', 'P.M.',
+      // 国家/组织
+      'U.S.', 'U.K.', 'U.N.', 'U.S.A.',
+      // 学位
+      'Ph.D.', 'M.D.', 'B.A.', 'M.A.', 'M.S.',
+    ];
+    let processedText = cleanPara;
 
-  // 恢复缩写词
-  const sentences = rawSentences.map(s => {
-    let restored = s;
+    // 暂时替换缩写词中的句号，避免误分割（转义所有 . 避免被正则视为通配符）
     abbreviations.forEach((abbr, idx) => {
       const placeholder = `<ABB${idx}>`;
-      restored = restored.replace(new RegExp(placeholder, 'g'), abbr);
+      const escaped = abbr.replace(/\./g, '\\.');
+      processedText = processedText.replace(new RegExp(escaped, 'gi'), placeholder);
     });
-    return restored.trim();
-  });
 
-  // 第二步：对长句子进行意群分割
-  const finalSegments: string[] = [];
-  sentences.forEach(sentence => {
-    if (shouldSplitByMeaningGroup(sentence, cfg)) {
-      const chunks = splitByMeaningGroup(sentence, cfg);
-      finalSegments.push(...chunks);
-    } else {
-      finalSegments.push(sentence);
-    }
-  });
+    // 按句子终止符分割
+    const rawSentences = processedText.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [processedText];
 
-  return finalSegments
+    // 恢复缩写词
+    const sentences = rawSentences.map(s => {
+      let restored = s;
+      abbreviations.forEach((abbr, idx) => {
+        const placeholder = `<ABB${idx}>`;
+        restored = restored.replace(new RegExp(placeholder, 'g'), abbr);
+      });
+      return restored.trim();
+    });
+
+    // 对长句子进行意群分割
+    sentences.forEach(sentence => {
+      if (shouldSplitByMeaningGroup(sentence, cfg)) {
+        const chunks = splitByMeaningGroup(sentence, cfg);
+        allSegments.push(...chunks);
+      } else {
+        allSegments.push(sentence);
+      }
+    });
+  }
+
+  return allSegments
     .filter(s => s.length > 0)
     .map((segment, index) => ({
       id: `s-${index}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
