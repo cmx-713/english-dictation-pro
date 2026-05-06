@@ -2011,73 +2011,117 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                           )}
                         </div>
 
-                        {/* 展开：提交名单 */}
-                        {isExpanded && (
-                          <div className="border-t border-slate-100 bg-slate-50 px-5 py-3">
-                            <div className="flex items-center justify-between mb-2">
-                              <p className="text-xs font-semibold text-slate-600">已提交名单（{a.subs.length} 人）</p>
-                              <button
-                                onClick={() => void refreshSubmissions(a.id)}
-                                className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
-                              >
-                                <RefreshCw className="w-3 h-3" /> 刷新
-                              </button>
-                            </div>
-                            {a.subs.length === 0 ? (
-                              <p className="text-xs text-slate-400 py-2">暂无学生提交</p>
-                            ) : (
-                              <div className="overflow-x-auto">
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="text-slate-500 border-b border-slate-200">
-                                      <th className="text-left py-1.5 pr-4 font-medium">姓名</th>
-                                      <th className="text-left py-1.5 pr-4 font-medium">学号</th>
-                                      <th className="text-left py-1.5 pr-4 font-medium">正确率</th>
-                                      <th className="text-left py-1.5 font-medium">提交时间</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {a.subs
-                                      .slice()
-                                      .sort((x, y) => (y.accuracy_rate ?? 0) - (x.accuracy_rate ?? 0))
-                                      .map((s, idx) => {
-                                        const reasonsText = (s.suspicious_reasons || []).map(r =>
-                                          r === 'pasted' ? '粘贴' : r === 'tooFast' ? '按键过快' : r === 'tooFewKeys' ? '按键过少' : r
-                                        ).join('、');
-                                        return (
-                                        <tr key={s.id} className={`border-b border-slate-100 hover:bg-white ${s.is_suspicious ? 'bg-red-50/50' : ''}`}>
-                                          <td className="py-1.5 pr-4 font-medium text-slate-800">
-                                            {idx === 0 && a.subs.length > 1 && !s.is_suspicious && <span className="mr-1">🥇</span>}
-                                            {s.student_name}
-                                            {s.is_suspicious && (
-                                              <span
-                                                className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-red-100 text-red-600 rounded text-[10px] font-bold align-middle"
-                                                title={`可疑提交：${reasonsText || '行为异常'}${s.pasted_count ? `（粘贴${s.pasted_count}次）` : ''}${s.suspicious_sentence_count ? `（${s.suspicious_sentence_count}句异常）` : ''}`}
-                                              >
-                                                ⚠ 可疑
-                                              </span>
-                                            )}
-                                          </td>
-                                          <td className="py-1.5 pr-4 text-slate-500">{s.student_number || '—'}</td>
-                                          <td className="py-1.5 pr-4">
-                                            {s.accuracy_rate != null ? (
-                                              <span className={`font-bold ${s.accuracy_rate >= 90 ? 'text-emerald-600' : s.accuracy_rate >= 70 ? 'text-amber-600' : 'text-red-500'}`}>
-                                                {s.accuracy_rate}%
-                                              </span>
-                                            ) : '—'}
-                                          </td>
-                                          <td className="py-1.5 text-slate-400">
-                                            {new Date(s.submitted_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                                          </td>
-                                        </tr>
-                                        );
-                                      })}
-                                  </tbody>
-                                </table>
+                        {/* 展开：提交名单 + 未提交名单 */}
+                        {isExpanded && (() => {
+                          const classStudents = students.filter(st => st.class_name === a.class_name);
+                          const submittedNames = new Set(a.subs.map(s => s.student_name.trim().toLowerCase()));
+                          const submittedNumbers = new Set(
+                            a.subs
+                              .filter(s => s.student_number)
+                              .map(s => (s.student_number as string).trim())
+                          );
+                          const unsubmitted = classStudents.filter(st => {
+                            const nameMatch = submittedNames.has(st.student_name.trim().toLowerCase());
+                            const numMatch = st.student_number ? submittedNumbers.has(st.student_number.trim()) : false;
+                            return !nameMatch && !numMatch;
+                          });
+                          return (
+                          <div className="border-t border-slate-100 bg-slate-50 px-5 py-3 space-y-4">
+                            {/* 已提交名单 */}
+                            <div>
+                              <div className="flex items-center justify-between mb-2">
+                                <p className="text-xs font-semibold text-slate-600">已提交（{a.subs.length} 人）</p>
+                                <button
+                                  onClick={() => void refreshSubmissions(a.id)}
+                                  className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                                >
+                                  <RefreshCw className="w-3 h-3" /> 刷新
+                                </button>
                               </div>
-                            )}
+                              {a.subs.length === 0 ? (
+                                <p className="text-xs text-slate-400 py-2">暂无学生提交</p>
+                              ) : (
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-xs">
+                                    <thead>
+                                      <tr className="text-slate-500 border-b border-slate-200">
+                                        <th className="text-left py-1.5 pr-4 font-medium">姓名</th>
+                                        <th className="text-left py-1.5 pr-4 font-medium">学号</th>
+                                        <th className="text-left py-1.5 pr-4 font-medium">正确率</th>
+                                        <th className="text-left py-1.5 font-medium">提交时间</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {a.subs
+                                        .slice()
+                                        .sort((x, y) => (y.accuracy_rate ?? 0) - (x.accuracy_rate ?? 0))
+                                        .map((s, idx) => {
+                                          const reasonsText = (s.suspicious_reasons || []).map(r =>
+                                            r === 'pasted' ? '粘贴' : r === 'tooFast' ? '按键过快' : r === 'tooFewKeys' ? '按键过少' : r
+                                          ).join('、');
+                                          return (
+                                          <tr key={s.id} className={`border-b border-slate-100 hover:bg-white ${s.is_suspicious ? 'bg-red-50/50' : ''}`}>
+                                            <td className="py-1.5 pr-4 font-medium text-slate-800">
+                                              {idx === 0 && a.subs.length > 1 && !s.is_suspicious && <span className="mr-1">🥇</span>}
+                                              {s.student_name}
+                                              {s.is_suspicious && (
+                                                <span
+                                                  className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-red-100 text-red-600 rounded text-[10px] font-bold align-middle"
+                                                  title={`可疑提交：${reasonsText || '行为异常'}${s.pasted_count ? `（粘贴${s.pasted_count}次）` : ''}${s.suspicious_sentence_count ? `（${s.suspicious_sentence_count}句异常）` : ''}`}
+                                                >
+                                                  ⚠ 可疑
+                                                </span>
+                                              )}
+                                            </td>
+                                            <td className="py-1.5 pr-4 text-slate-500">{s.student_number || '—'}</td>
+                                            <td className="py-1.5 pr-4">
+                                              {s.accuracy_rate != null ? (
+                                                <span className={`font-bold ${s.accuracy_rate >= 90 ? 'text-emerald-600' : s.accuracy_rate >= 70 ? 'text-amber-600' : 'text-red-500'}`}>
+                                                  {s.accuracy_rate}%
+                                                </span>
+                                              ) : '—'}
+                                            </td>
+                                            <td className="py-1.5 text-slate-400">
+                                              {new Date(s.submitted_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                            </td>
+                                          </tr>
+                                          );
+                                        })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* 未提交名单 */}
+                            <div className="pt-3 border-t border-slate-200">
+                              <p className="text-xs font-semibold text-red-600 mb-2">
+                                未提交（{classStudents.length > 0 ? unsubmitted.length : '？'} 人）
+                                {classStudents.length === 0 && (
+                                  <span className="ml-1 text-slate-400 font-normal">— 请先在「学生」标签页录入班级名单</span>
+                                )}
+                              </p>
+                              {classStudents.length > 0 && unsubmitted.length === 0 && (
+                                <p className="text-xs text-emerald-600 py-1">全班已提交 🎉</p>
+                              )}
+                              {unsubmitted.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {unsubmitted.map(st => (
+                                    <span
+                                      key={st.student_name}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded-full text-xs"
+                                      title={st.student_number ? `学号：${st.student_number}` : undefined}
+                                    >
+                                      {st.student_name}
+                                      {st.student_number && <span className="text-red-400">{st.student_number}</span>}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        )}
+                          );
+                        })()}
                       </div>
                     );
                   })

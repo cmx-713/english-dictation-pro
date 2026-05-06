@@ -251,6 +251,11 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
   const [aiContext, setAiContext] = useState('');
   const [aiInitialInput, setAiInitialInput] = useState('');
 
+  // 整篇总结（自动生成，内联展示）
+  const [autoSummary, setAutoSummary] = useState<string | null>(null);
+  const [autoSummaryLoading, setAutoSummaryLoading] = useState(false);
+  const autoSummaryFetchedRef = React.useRef(false);
+
   const buildAiContextSummary = () => {
     let summary = "【本次练习成绩单】\n";
     summary += `总句数：${totalSentences}，平均正确率：${avgAccuracy}%，完美句数：${perfectSentences}\n\n`;
@@ -273,6 +278,61 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
     setAiInitialInput("请根据上述练习记录，生成整体错误分析报告");
     setIsAiOpen(true);
   };
+
+  // 自动生成整篇总结（组件挂载后执行一次）
+  React.useEffect(() => {
+    if (autoSummaryFetchedRef.current) return;
+    autoSummaryFetchedRef.current = true;
+
+    const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
+    const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ?? '';
+    if (!supabaseUrl || !supabaseAnonKey) return;
+
+    const context = buildAiContextSummary();
+
+    const SUMMARY_SYSTEM_PROMPT = `你是专业英语听力教师。请根据学生本次整篇练习的错题记录，生成一份简短的总结反馈。
+
+要求：
+1. 只输出三个部分，用以下固定标题（Markdown 加粗）：
+   **本次主要问题**
+   **下次重点练习**
+   **鼓励语**
+2. "本次主要问题"：列出 2-3 个最突出的听力难点，用具体例子（原文单词）说明，而非笼统描述。
+3. "下次重点练习"：给出 1-2 个可立即执行的练习建议（如：专项练习弱读词、放慢 0.75x 速度反复听连读片段）。
+4. "鼓励语"：一句积极具体的鼓励（针对本次成绩）。
+5. 如果本次全部正确，直接写：本次练习全部正确，表现出色！继续保持这种状态。
+6. 总字数不超过 200 字，语气简洁直接，不要废话。`;
+
+    setAutoSummaryLoading(true);
+    fetch(`${supabaseUrl}/functions/v1/ai-chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': supabaseAnonKey,
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+      },
+      body: JSON.stringify({
+        messages: [
+          { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
+          { role: 'user', content: context },
+        ],
+        stream: false,
+        temperature: 0.3,
+      }),
+    })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+        const text = data?.choices?.[0]?.message?.content ?? null;
+        setAutoSummary(text);
+      })
+      .catch((err) => {
+        console.warn('[AutoSummary] 生成总结失败:', err);
+        setAutoSummary(null);
+      })
+      .finally(() => setAutoSummaryLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** 浮动按钮：打开时带上本次练习上下文；再次点击或点遮罩即收起 */
   const toggleAiAssistant = () => {
@@ -544,18 +604,33 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
 
         {/* 3. 学习洞察视图 */}
         {activeTab === 'insights' && (
-          <div className="bg-white p-8 rounded-xl border border-slate-100 shadow-sm text-center">
-            <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
-              <TrendingUp size={32} />
-            </div>
-            <h3 className="text-xl font-bold text-slate-900 mb-2">本次练习洞察</h3>
-            <p className="text-slate-600 mb-6 max-w-lg mx-auto">
-              基于你的表现，系统发现你在长难句的拼写上表现出色，但在介词连接上偶尔会遗漏。建议多听连读材料。
-            </p>
-            <div className="flex justify-center gap-3">
-              <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-sm"># 连读弱读</span>
-              <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-sm"># 介词搭配</span>
-              <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-sm"># 拼写准确性</span>
+          <div className="bg-white p-8 rounded-xl border border-slate-100 shadow-sm">
+            {/* 自动生成整篇总结 */}
+            <div className="mb-8">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center shrink-0">
+                  <TrendingUp size={16} />
+                </div>
+                <h3 className="text-base font-bold text-slate-900">本次练习总结</h3>
+              </div>
+              {autoSummaryLoading ? (
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-5 py-4 text-sm text-indigo-700 flex items-center gap-2">
+                  <span className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                  AI 正在生成本次练习总结…
+                </div>
+              ) : autoSummary ? (
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-5 py-4 text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">
+                  {autoSummary.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+                    part.startsWith('**') && part.endsWith('**')
+                      ? <strong key={i} className="text-indigo-700">{part.slice(2, -2)}</strong>
+                      : <span key={i}>{part}</span>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-slate-100 bg-slate-50 px-5 py-4 text-sm text-slate-500">
+                  总结生成失败，可点击下方"生成 AI 深度总结报告"手动获取。
+                </div>
+              )}
             </div>
 
             <div className="mt-8 mb-8 text-left">
