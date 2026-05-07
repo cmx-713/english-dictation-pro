@@ -20,7 +20,22 @@ import {
   CheckCircle2,
   Trash2,
   RefreshCw,
+  Lightbulb,
+  AlertTriangle,
+  ThumbsUp,
+  ThumbsDown,
+  Zap,
 } from 'lucide-react';
+import {
+  generateTeachingSuggestion,
+  saveSuggestion,
+  adoptSuggestion as adoptSuggestionDB,
+  ignoreSuggestion as ignoreSuggestionDB,
+  loadSuggestionsForClass,
+  isLlmEnabled,
+  setLlmEnabled,
+} from '../utils/teachingSuggestionEngine';
+import type { TeachingInput, TeachingSuggestion } from '../utils/teachingSuggestionEngine';
 import {
   LineChart,
   Line,
@@ -175,7 +190,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
   const [aiSuggestionLoading, setAiSuggestionLoading] = useState(false);
 
-  
+  // ── 教学建议标签页（teachingSuggestionEngine 接入）──────────────────────
+  const [suggestionClass, setSuggestionClass] = useState('');
+  const [suggestionGenerating, setSuggestionGenerating] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState<TeachingSuggestion | null>(null);
+  const [suggestionHistory, setSuggestionHistory] = useState<TeachingSuggestion[]>([]);
+  const [suggestionHistoryLoading, setSuggestionHistoryLoading] = useState(false);
+  const [suggLlmEnabled, setSuggLlmEnabled] = useState(isLlmEnabled());
+
   // 编辑学生信息的状态
   const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
   const [editClassName, setEditClassName] = useState('');
@@ -511,6 +533,113 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     } catch {
       setAssignClassWeakness({ topSubtypes: [], loading: false, hasData: false });
     }
+  };
+
+  // ── 教学建议标签页：加载历史 ──────────────────────────────────────────────
+  const loadSuggestionHistory = async (className: string) => {
+    if (!className) { setSuggestionHistory([]); return; }
+    setSuggestionHistoryLoading(true);
+    try {
+      const history = await loadSuggestionsForClass(className);
+      setSuggestionHistory(history);
+    } catch { setSuggestionHistory([]); }
+    finally { setSuggestionHistoryLoading(false); }
+  };
+
+  // ── 生成班级教学建议 ─────────────────────────────────────────────────────
+  const handleGenerateSuggestion = async () => {
+    if (!suggestionClass) return;
+    setSuggestionGenerating(true);
+    setActiveSuggestion(null);
+    try {
+      // 错因分布：优先使用已加载数据，否则临时查一次
+      let errorProfile = classErrorProfiles[suggestionClass] ?? { A: 0, B: 0, C: 0, D: 0, total: 0 };
+      if (errorProfile.total === 0 && Object.keys(classErrorProfiles).length === 0) {
+        // classErrorProfiles 未加载时，快速拉一次近14天数据
+        const since14 = new Date(); since14.setDate(since14.getDate() - 14);
+        const { data: recs } = await supabase
+          .from('practice_records').select('error_summary').eq('class_name', suggestionClass)
+          .gte('created_at', since14.toISOString());
+        const ep = { A: 0, B: 0, C: 0, D: 0, total: 0 };
+        (recs || []).forEach((r: any) => {
+          const bc = r.error_summary?.by_category || {};
+          (['A', 'B', 'C', 'D'] as const).forEach(k => {
+            ep[k] += Number(bc[k]) || 0;
+            ep.total += Number(bc[k]) || 0;
+          });
+        });
+        errorProfile = ep;
+      }
+
+      // 班级基础数据
+      const cls = classes.find(c => c.class_name === suggestionClass);
+      const avgAccuracy = cls?.avg_accuracy ?? null;
+
+      // 近7天练习次数 & 趋势
+      const since7 = new Date(); since7.setDate(since7.getDate() - 7);
+      const since14 = new Date(); since14.setDate(since14.getDate() - 14);
+      const { data: weekRecs } = await supabase
+        .from('practice_records').select('accuracy_rate, created_at')
+        .eq('class_name', suggestionClass).gte('created_at', since14.toISOString());
+      const weekPractice = (weekRecs || []).filter(r => new Date(r.created_at) >= since7);
+      const prevPractice = (weekRecs || []).filter(r => new Date(r.created_at) < since7);
+      const weeklyPracticeCount = weekPractice.length;
+      const weekAvg = weekPractice.length > 0 ? weekPractice.reduce((s: number, r: any) => s + (r.accuracy_rate || 0), 0) / weekPractice.length : null;
+      const prevAvg = prevPractice.length > 0 ? prevPractice.reduce((s: number, r: any) => s + (r.accuracy_rate || 0), 0) / prevPractice.length : null;
+      const recentTrend: TeachingInput['recentTrend'] =
+        weekAvg == null || prevAvg == null ? 'unknown'
+        : weekAvg - prevAvg > 3 ? 'improving'
+        : prevAvg - weekAvg > 3 ? 'declining' : 'stable';
+
+      // 作业数据：复用已加载的 assignmentSubmissions
+      const classAssigns = [...activeAssignments, ...assignmentHistory].filter(a => a.class_name === suggestionClass);
+      const classSubs = classAssigns.flatMap(a => assignmentSubmissions[a.id] || []);
+      const classStudents = students.filter(s => s.class_name === suggestionClass);
+      const classSize = classStudents.length || 1;
+      const completionRate = classAssigns.length > 0
+        ? Math.round((new Set(classSubs.map((s: any) => s.student_name)).size / classSize) * 100)
+        : null;
+      const avgAcc = classSubs.length > 0
+        ? Math.round(classSubs.reduce((s: number, sub: any) => s + (sub.accuracy_rate || 0), 0) / classSubs.length)
+        : null;
+
+      const input: TeachingInput = {
+        className: suggestionClass,
+        errorProfile,
+        assignmentCompletionRate: completionRate,
+        assignmentAvgAccuracy: avgAcc,
+        recentTrend,
+        avgAccuracy,
+        weeklyPracticeCount,
+      };
+
+      const suggestion = await generateTeachingSuggestion(input);
+      const saved = await saveSuggestion(suggestion);
+      setActiveSuggestion(saved);
+      // 刷新历史
+      void loadSuggestionHistory(suggestionClass);
+    } catch (e: any) {
+      alert('生成失败：' + e.message);
+    } finally {
+      setSuggestionGenerating(false);
+    }
+  };
+
+  const handleAdoptSuggestion = async (id: string) => {
+    try {
+      const cls = classes.find(c => c.class_name === suggestionClass);
+      await adoptSuggestionDB(id, cls?.avg_accuracy ?? null);
+      setSuggestionHistory(prev => prev.map(s => s.id === id ? { ...s, status: 'adopted' } : s));
+      if (activeSuggestion?.id === id) setActiveSuggestion(prev => prev ? { ...prev, status: 'adopted' } : null);
+    } catch (e: any) { alert('采纳失败：' + e.message); }
+  };
+
+  const handleIgnoreSuggestion = async (id: string) => {
+    try {
+      await ignoreSuggestionDB(id);
+      setSuggestionHistory(prev => prev.map(s => s.id === id ? { ...s, status: 'ignored' } : s));
+      if (activeSuggestion?.id === id) setActiveSuggestion(prev => prev ? { ...prev, status: 'ignored' } : null);
+    } catch (e: any) { alert('忽略失败：' + e.message); }
   };
 
   const generateClassReport = async (className: string) => {
@@ -933,7 +1062,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
               { key: 'students', label: '学生', icon: Users },
               { key: 'classes', label: '班级', icon: BookOpen },
               { key: 'trends', label: '趋势', icon: TrendingUp },
-              { key: 'assignments', label: '作业看板', icon: ClipboardList }
+              { key: 'assignments', label: '作业看板', icon: ClipboardList },
+              { key: 'suggestions', label: '教学建议', icon: Lightbulb },
             ].map(tab => (
               <button
                 key={tab.key}
@@ -945,6 +1075,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                   if (tab.key === 'assignments' && !allSubmissionsLoaded && !allSubmissionsLoading) {
                     const allIds = [...activeAssignments, ...assignmentHistory].map(a => a.id);
                     void loadAllSubmissions(allIds);
+                  }
+                  if (tab.key === 'suggestions') {
+                    const defaultClass = classes[0]?.class_name ?? '';
+                    if (!suggestionClass && defaultClass) setSuggestionClass(defaultClass);
+                    if (defaultClass || suggestionClass) {
+                      void loadSuggestionHistory(suggestionClass || defaultClass);
+                    }
                   }
                 }}
                 className={`flex items-center gap-2 px-4 py-2 border-b-2 transition-colors ${activeTab === tab.key
@@ -1014,6 +1151,107 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                 <p className="text-xs text-slate-500 mt-1">已有数据的班级</p>
               </div>
             </div>
+
+            {/* ── 待关注预警（系统主动发现的异常信号）──────────────────────── */}
+            {(() => {
+              const sevenDaysAgo = new Date();
+              sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+              const sevenDaysAgoStr = sevenDaysAgo.toISOString().split('T')[0];
+
+              // ① 连续低分学生（正确率 < 60%）
+              const lowAccStudents = students
+                .filter(s => s.avg_accuracy != null && s.avg_accuracy < 60)
+                .sort((a, b) => a.avg_accuracy - b.avg_accuracy)
+                .slice(0, 6);
+
+              // ② 7天无练习学生（有历史记录但最近停练）
+              const inactiveStudents = students
+                .filter(s => s.last_practice_date && s.last_practice_date < sevenDaysAgoStr && s.total_practices > 0)
+                .sort((a, b) => a.last_practice_date.localeCompare(b.last_practice_date))
+                .slice(0, 6);
+
+              // ③ 本周零练习班级
+              const inactiveClasses = classes.filter(c => {
+                const profile = classErrorProfiles[c.class_name];
+                return (!profile || profile.total === 0) && c.student_count > 0;
+              });
+
+              const hasAlerts = lowAccStudents.length > 0 || inactiveStudents.length > 0 || inactiveClasses.length > 0;
+              if (!hasAlerts) return null;
+
+              return (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 shadow-sm">
+                  <h3 className="text-sm font-bold text-amber-800 flex items-center gap-2 mb-4">
+                    <AlertTriangle className="w-4 h-4 text-amber-500" />
+                    待关注预警
+                    <span className="text-xs font-normal text-amber-600 ml-1">系统自动识别，建议及时跟进</span>
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* 低分预警 */}
+                    {lowAccStudents.length > 0 && (
+                      <div className="bg-white rounded-lg border border-red-200 p-3">
+                        <p className="text-xs font-semibold text-red-600 mb-2 flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
+                          低分学生（正确率 &lt; 60%）
+                        </p>
+                        <div className="space-y-1.5">
+                          {lowAccStudents.map(s => (
+                            <div key={s.student_name} className="flex items-center justify-between text-xs">
+                              <span className="text-slate-700 truncate">{s.student_name}</span>
+                              <span className="ml-2 shrink-0 font-bold text-red-500">{Math.round(s.avg_accuracy)}%</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-xs text-red-400 mt-2">建议：降低练习难度或安排个别辅导</p>
+                      </div>
+                    )}
+                    {/* 停练预警 */}
+                    {inactiveStudents.length > 0 && (
+                      <div className="bg-white rounded-lg border border-orange-200 p-3">
+                        <p className="text-xs font-semibold text-orange-600 mb-2 flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-orange-400 shrink-0" />
+                          7天未练习学生
+                        </p>
+                        <div className="space-y-1.5">
+                          {inactiveStudents.map(s => {
+                            const daysDiff = s.last_practice_date
+                              ? Math.floor((Date.now() - new Date(s.last_practice_date).getTime()) / 86400000)
+                              : null;
+                            return (
+                              <div key={s.student_name} className="flex items-center justify-between text-xs">
+                                <span className="text-slate-700 truncate">{s.student_name}</span>
+                                <span className="ml-2 shrink-0 text-orange-400 font-medium">
+                                  {daysDiff != null ? `${daysDiff}天前` : '—'}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <p className="text-xs text-orange-400 mt-2">建议：课堂提醒或布置强制作业</p>
+                      </div>
+                    )}
+                    {/* 低活跃班级 */}
+                    {inactiveClasses.length > 0 && (
+                      <div className="bg-white rounded-lg border border-amber-200 p-3">
+                        <p className="text-xs font-semibold text-amber-600 mb-2 flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                          近期低活跃班级
+                        </p>
+                        <div className="space-y-1.5">
+                          {inactiveClasses.map(c => (
+                            <div key={c.class_name} className="flex items-center justify-between text-xs">
+                              <span className="text-slate-700">{c.class_name}</span>
+                              <span className="ml-2 text-slate-400">{c.student_count} 人</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-xs text-amber-500 mt-2">建议：前往"教学建议"生成本班专项计划</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* 图表区域 */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -2358,6 +2596,170 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
             </div>
           );
         })()}
+
+        {/* ── 教学建议标签页 ─────────────────────────────────────────────── */}
+        {activeTab === 'suggestions' && (
+          <div className="space-y-6">
+            {/* 顶部：选班 + 生成按钮 */}
+            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+              <div className="flex flex-wrap items-end gap-4">
+                <div className="flex-1 min-w-[180px]">
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">选择班级</label>
+                  <select
+                    value={suggestionClass}
+                    onChange={e => {
+                      setSuggestionClass(e.target.value);
+                      setActiveSuggestion(null);
+                      void loadSuggestionHistory(e.target.value);
+                    }}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none bg-white text-sm"
+                  >
+                    <option value="">请选择班级</option>
+                    {classes.map(c => (
+                      <option key={c.class_name} value={c.class_name}>{c.class_name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer select-none">
+                    <div
+                      onClick={() => { const next = !suggLlmEnabled; setSuggLlmEnabled(next); setLlmEnabled(next); }}
+                      className={`relative w-10 h-5 rounded-full transition-colors ${suggLlmEnabled ? 'bg-blue-500' : 'bg-slate-300'}`}
+                    >
+                      <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${suggLlmEnabled ? 'translate-x-5' : ''}`} />
+                    </div>
+                    <Zap className={`w-3.5 h-3.5 ${suggLlmEnabled ? 'text-blue-500' : 'text-slate-400'}`} />
+                    LLM 增强
+                  </label>
+                  <button
+                    onClick={() => void handleGenerateSuggestion()}
+                    disabled={!suggestionClass || suggestionGenerating}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {suggestionGenerating
+                      ? <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />生成中…</>
+                      : <><Lightbulb className="w-4 h-4" />生成本班教学建议</>}
+                  </button>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 mt-2">
+                {suggLlmEnabled
+                  ? '✦ LLM 增强模式：调用 DeepSeek 生成个性化建议（需配置 AI 助教 API Key）；失败时自动降级规则引擎'
+                  : '⚙ 规则引擎模式：基于错因分布与作业数据本地生成，无需 API Key'}
+              </p>
+            </div>
+
+            {/* 当前新生成的建议 */}
+            {activeSuggestion && (
+              <div className="bg-white rounded-xl border-2 border-blue-200 p-5 shadow-sm space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Lightbulb className="w-5 h-5 text-blue-500 shrink-0" />
+                    <div>
+                      <p className="font-semibold text-slate-900 text-sm">{activeSuggestion.summary}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {new Date(activeSuggestion.generatedAt).toLocaleString('zh-CN')} ·{' '}
+                        <span className={activeSuggestion.source === 'llm' ? 'text-blue-500' : 'text-slate-400'}>
+                          {activeSuggestion.source === 'llm' ? 'LLM 生成' : '规则生成'}
+                        </span>
+                        {activeSuggestion.status && activeSuggestion.status !== 'generated' && (
+                          <span className={`ml-2 px-1.5 py-0.5 rounded text-xs font-medium ${activeSuggestion.status === 'adopted' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                            {activeSuggestion.status === 'adopted' ? '已采纳' : '已忽略'}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  {activeSuggestion.id && activeSuggestion.status === 'generated' && (
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        onClick={() => void handleAdoptSuggestion(activeSuggestion.id!)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-medium hover:bg-emerald-700 transition-colors"
+                      >
+                        <ThumbsUp className="w-3.5 h-3.5" />采纳
+                      </button>
+                      <button
+                        onClick={() => void handleIgnoreSuggestion(activeSuggestion.id!)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-300 text-slate-600 rounded-lg text-xs font-medium hover:bg-slate-50 transition-colors"
+                      >
+                        <ThumbsDown className="w-3.5 h-3.5" />忽略
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">📌 本周优先讲解</p>
+                    <ul className="space-y-1.5">
+                      {activeSuggestion.priorityPoints.map((pt, i) => (
+                        <li key={i} className="text-sm text-slate-700 flex gap-1.5">
+                          <span className="text-blue-400 shrink-0">·</span>{pt}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">🎯 课堂活动建议</p>
+                    <ul className="space-y-1.5">
+                      {activeSuggestion.classroomActivities.map((act, i) => (
+                        <li key={i} className="text-sm text-slate-700 flex gap-1.5">
+                          <span className="text-amber-400 shrink-0">·</span>{act}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">📚 课后作业建议</p>
+                    <ul className="space-y-1.5">
+                      {activeSuggestion.homeworkSuggestions.map((hw, i) => (
+                        <li key={i} className="text-sm text-slate-700 flex gap-1.5">
+                          <span className="text-emerald-400 shrink-0">·</span>{hw}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 历史建议列表 */}
+            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+              <h3 className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-slate-400" />
+                历史建议记录
+                {suggestionClass && <span className="text-slate-400 font-normal">（{suggestionClass}）</span>}
+              </h3>
+              {suggestionHistoryLoading ? (
+                <p className="text-sm text-slate-400 py-6 text-center">加载中…</p>
+              ) : suggestionHistory.length === 0 ? (
+                <p className="text-sm text-slate-400 py-6 text-center">暂无历史建议，点击上方"生成本班教学建议"开始</p>
+              ) : (
+                <div className="space-y-3">
+                  {suggestionHistory.map(s => (
+                    <div key={s.id} className={`rounded-lg border p-4 ${s.status === 'adopted' ? 'border-emerald-200 bg-emerald-50' : s.status === 'ignored' ? 'border-slate-200 bg-slate-50 opacity-60' : 'border-slate-200'}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-slate-800">{s.summary}</p>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            {new Date(s.generatedAt).toLocaleString('zh-CN')} · {s.source === 'llm' ? 'LLM' : '规则'}
+                            {s.status === 'adopted' && <span className="ml-2 text-emerald-600 font-medium">✓ 已采纳</span>}
+                            {s.status === 'ignored' && <span className="ml-2 text-slate-400">已忽略</span>}
+                          </p>
+                        </div>
+                        {s.id && s.status === 'generated' && (
+                          <div className="flex gap-2 shrink-0">
+                            <button onClick={() => void handleAdoptSuggestion(s.id!)} className="px-2 py-1 bg-emerald-600 text-white rounded text-xs hover:bg-emerald-700 transition-colors">采纳</button>
+                            <button onClick={() => void handleIgnoreSuggestion(s.id!)} className="px-2 py-1 border border-slate-300 text-slate-500 rounded text-xs hover:bg-slate-100 transition-colors">忽略</button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 布置作业模态框 */}
