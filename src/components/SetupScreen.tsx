@@ -537,9 +537,12 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
               {/* 兼容性说明 */}
               <div className="mt-3 p-3 bg-slate-100 rounded-lg text-xs text-slate-500 space-y-1">
                 <p className="font-medium text-slate-600">使用说明</p>
-                <p>· 仅支持 <strong>Chrome / Edge</strong> 浏览器（Firefox 不支持）</p>
                 <p>· 首次使用需在浏览器弹窗中点击"允许"授权麦克风</p>
-                <p>· 如提示"网络错误"，原因是该功能依赖 Google 语音服务，请确保网络畅通</p>
+                <p className="font-medium text-slate-600 mt-1.5">支持的设备与浏览器</p>
+                <p>· <strong>手机</strong>：iOS Safari ✅ &nbsp;|&nbsp; iOS/Android Chrome ✅</p>
+                <p>· <strong>电脑（Mac）</strong>：Safari ✅</p>
+                <p>· <strong>电脑（Windows）</strong>：Chrome / Edge 依赖 Google 服务，国内网络下通常无法使用 ❌</p>
+                <p>· Firefox 不支持此功能 ❌</p>
               </div>
 
             </div>
