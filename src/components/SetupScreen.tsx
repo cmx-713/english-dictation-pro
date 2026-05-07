@@ -258,12 +258,14 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
     }
   };
 
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
   // 实时语音识别
   const handleVoiceRecording = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      alert('您的浏览器不支持语音识别功能。');
+      setVoiceError('您的浏览器不支持语音识别。请使用 Chrome 浏览器，并确保网络正常。');
       return;
     }
 
@@ -273,6 +275,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
       return;
     }
 
+    setVoiceError(null);
     const recognizer = new SpeechRecognition();
     recognizer.continuous = true;
     recognizer.interimResults = true;
@@ -281,6 +284,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
     let finalTranscript = '';
 
     recognizer.onresult = (event: any) => {
+      setVoiceError(null);
       let interimTranscript = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
@@ -296,6 +300,16 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
     recognizer.onerror = (event: any) => {
       console.error('Speech recognition error:', event.error);
       setIsRecording(false);
+      const errorMessages: Record<string, string> = {
+        'not-allowed': '麦克风权限被拒绝。请点击浏览器地址栏左侧的锁形图标，允许麦克风访问，然后刷新页面重试。',
+        'network': '网络连接失败。语音识别需要连接到 Google 服务，请检查网络或使用可访问 Google 的网络环境。',
+        'no-speech': '未检测到语音，请靠近麦克风并大声朗读。',
+        'audio-capture': '未找到麦克风设备，请检查麦克风是否已连接。',
+        'service-not-allowed': '语音识别服务被阻止。请确保页面通过 HTTPS 访问，并使用 Chrome 浏览器。',
+        'aborted': '语音识别已中止，请重新点击按钮开始。',
+      };
+      const msg = errorMessages[event.error] ?? `识别出错（${event.error}），请重试。`;
+      setVoiceError(msg);
     };
 
     recognizer.onend = () => {
@@ -305,9 +319,13 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
       }
     };
 
-    recognizer.start();
-    setRecognition(recognizer);
-    setIsRecording(true);
+    try {
+      recognizer.start();
+      setRecognition(recognizer);
+      setIsRecording(true);
+    } catch (e: any) {
+      setVoiceError('启动语音识别失败：' + (e?.message ?? '未知错误'));
+    }
   };
 
   return (
@@ -493,7 +511,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
               <button
                 onClick={handleVoiceRecording}
                 className={`w-full py-4 rounded-xl font-bold shadow-lg shadow-blue-100 transition-all flex items-center justify-center gap-2 text-lg ${isRecording
-                  ? 'bg-red-500 hover:bg-blue-600 text-white animate-pulse'
+                  ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse'
                   : 'bg-blue-700 hover:bg-blue-800 text-white shadow-md'
                   }`}
               >
@@ -501,30 +519,70 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
                 {isRecording ? '点击停止录音' : '开始语音识别'}
               </button>
 
-              {text && mode === 'voice' && (
-                <div className="mt-4 p-4 bg-white rounded-lg border border-slate-200">
-                  <p className="text-xs text-slate-500 mb-2">已识别内容预览：</p>
-                  <p className="text-slate-700 text-sm line-clamp-3">{text}</p>
+              {/* 录音中：实时内容预览（只读） */}
+              {isRecording && text && (
+                <div className="mt-3 p-3 bg-white border border-blue-200 rounded-lg text-sm text-slate-700 max-h-32 overflow-y-auto">
+                  <p className="text-xs text-blue-400 mb-1">实时识别中…</p>
+                  {text}
                 </div>
               )}
+
+              {/* 错误提示 */}
+              {voiceError && (
+                <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                  ⚠️ {voiceError}
+                </div>
+              )}
+
+              {/* 兼容性说明 */}
+              <div className="mt-3 p-3 bg-slate-100 rounded-lg text-xs text-slate-500 space-y-1">
+                <p className="font-medium text-slate-600">使用说明</p>
+                <p>· 仅支持 <strong>Chrome / Edge</strong> 浏览器（Firefox 不支持）</p>
+                <p>· 首次使用需在浏览器弹窗中点击"允许"授权麦克风</p>
+                <p>· 如提示"网络错误"，原因是该功能依赖 Google 语音服务，请确保网络畅通</p>
+              </div>
+
             </div>
 
+            {/* 识别结果：可编辑 textarea，方便用户核查和修改 */}
             {text && mode === 'voice' && (
-              <div className="flex justify-end">
-                <button
-                  onClick={() => {
-                    if (!studentName.trim() || !studentNumber.trim()) {
-                      alert('请先填写学生信息（姓名和学号）');
-                      return;
-                    }
-                    setMode('text');
-                    setTimeout(() => onStart(text, { studentName, studentNumber, className, inputMethod: 'voice', difficulty }), 300);
-                  }}
-                  className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-8 py-3 rounded-lg font-semibold transition-all shadow-md"
-                >
-                  使用此内容开始练习
-                  <ArrowRight size={20} />
-                </button>
+              <div className="space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <p className="text-sm font-medium text-slate-700">已识别内容（可直接修改）</p>
+                    <button
+                      onClick={() => setText('')}
+                      className="text-xs text-slate-400 hover:text-red-500 transition-colors"
+                    >
+                      清空
+                    </button>
+                  </div>
+                  <textarea
+                    value={text}
+                    onChange={e => setText(e.target.value)}
+                    rows={8}
+                    className="w-full p-4 rounded-lg border border-blue-200 bg-white focus:ring-2 focus:ring-blue-400 focus:border-transparent outline-none resize-none text-slate-800 text-sm leading-relaxed"
+                    placeholder="识别结果将显示在这里，可以直接编辑修改…"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">请确认内容无误后再开始练习</p>
+                </div>
+                <DifficultySelector value={difficulty} onChange={setDifficulty} />
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => {
+                      if (!studentName.trim() || !studentNumber.trim()) {
+                        alert('请先填写学生信息（姓名和学号）');
+                        return;
+                      }
+                      onStart(text, { studentName, studentNumber, className, inputMethod: 'voice', difficulty });
+                    }}
+                    disabled={!text.trim()}
+                    className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-8 py-3 rounded-lg font-semibold transition-all shadow-md disabled:opacity-50"
+                  >
+                    开始练习
+                    <ArrowRight size={20} />
+                  </button>
+                </div>
               </div>
             )}
           </div>
