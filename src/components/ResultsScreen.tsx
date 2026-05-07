@@ -13,8 +13,9 @@ import {
 import { SentenceResult } from './PracticeScreen';
 import { AIAssistant } from './AIAssistant';
 import { OVERALL_ANALYSIS_SYSTEM_PROMPT } from '../utils/aiPrompts';
-import { Bot, AlertTriangle, MessageSquare, ChevronRight } from 'lucide-react';
+import { Bot, MessageSquare, ChevronRight } from 'lucide-react';
 import { analyzeErrors } from '../utils/errorAnalysis';
+import { getDiffEntryLabel } from '../utils/diffLogic';
 import { supabase } from '../lib/supabase';
 import { ErrorCharts } from './ErrorCharts';
 
@@ -554,18 +555,24 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
                   {/* 2. 原文对比 (Original Construction) */}
                   <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
                     <span className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-2 block">原文对比 & 错误标注</span>
-                    <div className="text-lg font-medium text-slate-800 leading-[3rem] font-serif">
+                    <div className="text-lg font-medium text-slate-800 leading-[3.5rem] font-serif">
                       {r.diffs.map((part: any, idx: number) => {
                         const [type, text] = part;
-                        // Type 1: Missing (In original, user missed it)
+                        // Type 1: In original but not in user input → precise label
                         if (type === 1) {
+                          const entryLabel = getDiffEntryLabel(r.diffs, idx);
+                          const colorClasses: Record<string, { text: string; border: string }> = {
+                            green:  { text: 'text-emerald-600', border: 'border-emerald-500' },
+                            teal:   { text: 'text-purple-600',  border: 'border-purple-500'  },
+                            blue:   { text: 'text-blue-600',    border: 'border-blue-500'    },
+                            purple: { text: 'text-purple-600',  border: 'border-purple-500'  },
+                            orange: { text: 'text-orange-600',  border: 'border-orange-500'  },
+                            red:    { text: 'text-red-600',     border: 'border-red-500'     },
+                          };
+                          const cls = colorClasses[entryLabel.color] ?? colorClasses.green;
                           return (
-                            <span key={idx} className="relative inline-block mx-1 group">
-                              <span className="text-emerald-600 font-bold border-b-2 border-emerald-500 pb-0.5 cursor-help">{text}</span>
-                              <span className="absolute top-full mt-1 left-1/2 -translate-x-1/2 text-[10px] bg-white border border-emerald-200 text-emerald-600 px-2 py-0.5 rounded shadow-sm whitespace-nowrap z-10 flex items-center gap-1">
-                                <AlertTriangle size={10} className="fill-emerald-100" />
-                                漏词
-                              </span>
+                            <span key={idx} className="inline-block mx-1">
+                              <span className={`${cls.text} font-bold border-b-2 ${cls.border} pb-0.5`}>{text}</span>
                             </span>
                           );
                         }
@@ -583,16 +590,18 @@ export const ResultsScreen: React.FC<ResultsScreenProps> = ({ results, onRestart
 
                 {/* 错误提示文字 (Simplified) */}
                 {r.accuracy < 100 && (
-                  <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
+                  <div className="mt-4 flex flex-wrap gap-2 pb-2">
                     {r.diffs.some(d => d[0] === 1) && (
-                      <div className="flex items-center gap-2 text-xs text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-100">
-                        <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                        绿色下划线：漏掉的词
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-200">
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />绿：漏词</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 shrink-0" />蓝：拼写错误</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 shrink-0" />橙：音近混淆</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-500 shrink-0" />紫：弱读/助动词漏听</span>
                       </div>
                     )}
                     {r.diffs.some(d => d[0] === -1) && (
-                      <div className="flex items-center gap-2 text-xs text-red-600 bg-red-50 px-3 py-1.5 rounded-full border border-red-100">
-                        <div className="w-2 h-2 rounded-full bg-red-500"></div>
+                      <div className="flex items-center gap-1.5 text-xs text-red-600 bg-red-50 px-3 py-1.5 rounded-full border border-red-100">
+                        <div className="w-2 h-2 rounded-full bg-red-500" />
                         红色删除线：多写的词
                       </div>
                     )}

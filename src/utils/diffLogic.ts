@@ -486,6 +486,55 @@ export const predictErrorReason = (diffs: Diff[]): FeedbackItem[] => {
 };
 
 
+// ── 每个 diff token 的精确标签（供结果页渲染使用）──────────────────────────
+
+export interface DiffEntryLabel {
+  text: string;
+  color: 'green' | 'blue' | 'purple' | 'orange' | 'teal' | 'red';
+}
+
+/**
+ * 给定 diffs 数组和某个 type=1 的 index，
+ * 判断它是「真·漏词」还是「替换错误」，返回精确标签与配色。
+ */
+export function getDiffEntryLabel(diffs: Diff[], idx: number): DiffEntryLabel {
+  const [type, text] = diffs[idx];
+  if (type !== 1) return { text: '', color: 'green' };
+
+  // 检查相邻是否有 type=-1（说明是替换，而非纯漏词）
+  const prev = idx > 0 ? diffs[idx - 1] : null;
+  const next = idx < diffs.length - 1 ? diffs[idx + 1] : null;
+  const typedText = (next && next[0] === -1) ? next[1]
+                  : (prev && prev[0] === -1) ? prev[1]
+                  : null;
+
+  if (typedText === null) {
+    // 真·漏词 → 细分弱读/助动词
+    const word = text.trim().toLowerCase();
+    if (AUXILIARY_WORDS.has(word)) return { text: '助动词漏听', color: 'teal' };
+    if (WEAK_FORM_WORDS.has(word)) return { text: '弱读词漏听', color: 'teal' };
+    return { text: '漏词', color: 'green' };
+  }
+
+  // 替换 → 调用分类函数
+  const origWords = text.split(/\s+/).filter(w => /[a-zA-Z]/.test(w));
+  const typedWords = typedText.split(/\s+/).filter(w => /[a-zA-Z]/.test(w));
+  if (origWords.length === 1 && typedWords.length === 1) {
+    const item = classifySubstitution(origWords[0], typedWords[0]);
+    const colorMap: Record<string, DiffEntryLabel['color']> = {
+      spelling: 'blue',
+      phonetic_confusion: 'orange',
+      connected_speech: 'purple',
+      weak_form: 'teal',
+      auxiliary: 'teal',
+      extra_word: 'red',
+      general: 'orange',
+    };
+    return { text: item.label, color: colorMap[item.phenomenon] ?? 'orange' };
+  }
+  return { text: '词语替换', color: 'orange' };
+}
+
 // 计算编辑距离（Levenshtein Distance）
 const levenshteinDistance = (str1: string, str2: string): number => {
   const matrix: number[][] = [];
