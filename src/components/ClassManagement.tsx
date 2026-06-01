@@ -31,9 +31,10 @@ interface ClassGroup {
 interface ClassManagementProps {
   teacherUserId?: string | null;
   isSuperAdmin?: boolean;
+  onDataChanged?: () => void; // 删除/导入后通知父组件刷新统计数据
 }
 
-export default function ClassManagement({ teacherUserId, isSuperAdmin }: ClassManagementProps) {
+export default function ClassManagement({ teacherUserId, isSuperAdmin, onDataChanged }: ClassManagementProps) {
   const [classGroups, setClassGroups] = useState<ClassGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedClass, setExpandedClass] = useState<string | null>(null);
@@ -159,6 +160,7 @@ export default function ClassManagement({ teacherUserId, isSuperAdmin }: ClassMa
       setShowAddStudentModal(false);
       showToast('success', `已添加学生：${name}`);
       await loadStudents();
+      onDataChanged?.();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setAddError(msg);
@@ -212,7 +214,10 @@ export default function ClassManagement({ teacherUserId, isSuperAdmin }: ClassMa
     }
     setImportResult({ success, skip, errors });
     setImportLoading(false);
-    if (success > 0) await loadStudents();
+    if (success > 0) {
+      await loadStudents();
+      onDataChanged?.();
+    }
   };
 
   // ── 删除单个学生 ──
@@ -225,6 +230,7 @@ export default function ClassManagement({ teacherUserId, isSuperAdmin }: ClassMa
       showToast('success', `已删除学生：${deleteTarget.name}`);
       setDeleteTarget(null);
       await loadStudents();
+      onDataChanged?.();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       showToast('error', `删除失败：${msg}`);
@@ -248,6 +254,7 @@ export default function ClassManagement({ teacherUserId, isSuperAdmin }: ClassMa
       setDeleteClassTarget(null);
       setExpandedClass(prev => (prev === deleteClassTarget ? null : prev));
       await loadStudents();
+      onDataChanged?.();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       showToast('error', `删除班级失败：${msg}`);

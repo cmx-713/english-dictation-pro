@@ -3198,7 +3198,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack, isSu
       {/* ── 班级管理 Tab ──────────────────────────── */}
       {activeTab === 'classManagement' && (
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <ClassManagement teacherUserId={teacherUserId} isSuperAdmin={isSuperAdmin} />
+          <ClassManagement teacherUserId={teacherUserId} isSuperAdmin={isSuperAdmin} onDataChanged={fetchData} />
         </div>
       )}
 
