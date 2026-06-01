@@ -134,6 +134,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack, isSu
   const [error, setError] = useState<string | null>(null);
   const [selectedClass, setSelectedClass] = useState<string>('全部');
   const [expandedStudent, setExpandedStudent] = useState<string | null>(null);
+  // 当前登录教师"自己的"学号集合（用于判断是否可编辑该学生）
+  const [ownedStudentNumbers, setOwnedStudentNumbers] = useState<Set<string>>(new Set());
   const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'classes' | 'trends' | 'suggestions' | 'assignments' | 'teachers' | 'classManagement'>('overview');
   const [suggestionStats, setSuggestionStats] = useState<SuggestionStats>({
     total: 0, done: 0, dismissed: 0, pending: 0,
@@ -338,33 +340,33 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack, isSu
     setError(null);
 
     try {
-      // ── Step 1: 从 students 表取完整名单（普通教师按 teacher_id 过滤，超管取全部）──
+      // ── Step 1: 从 students 表取当前教师自己的学生名单（超管也只看自己的）──
+      // 设计原则：每位教师（含超管）的统计分析只显示自己的数据
+      // 超管的特权仅限于"教师管理"Tab，不扩展到统计范围
       let rosterQuery = supabase
         .from('students')
         .select('student_name, student_number, class_name, teacher_id');
-      if (!isSuperAdmin && teacherUserId) {
+      if (teacherUserId) {
         rosterQuery = rosterQuery.eq('teacher_id', teacherUserId);
       }
       const { data: rosterData } = await rosterQuery;
       const roster = rosterData ?? [];
 
-      // 用于前端过滤的 key 集合（普通教师）
-      const allowedStudentKeys: Set<string> | null = (!isSuperAdmin && teacherUserId)
-        ? new Set(roster.map(s => `${s.student_name}|${s.class_name ?? ''}`))
-        : null;
+      // 用于前端过滤的 key 集合
+      const allowedStudentKeys: Set<string> = new Set(
+        roster.map(s => `${s.student_name}|${s.class_name ?? ''}`)
+      );
 
-      // ── Step 2: 从 student_summary 视图获取有练习记录的统计（数据库 RLS + 前端双重过滤）──
+      // ── Step 2: 从 student_summary 视图获取有练习记录的统计，前端按名单过滤 ──
       const { data: studentsData, error: studentsError } = await supabase
         .from('student_summary')
         .select('*')
         .order('avg_accuracy', { ascending: false });
 
       if (studentsError) throw studentsError;
-      const filteredSummary = allowedStudentKeys
-        ? (studentsData || []).filter(s =>
-            allowedStudentKeys!.has(`${s.student_name}|${s.class_name ?? ''}`)
-          )
-        : (studentsData || []);
+      const filteredSummary = (studentsData || []).filter(s =>
+        allowedStudentKeys.has(`${s.student_name}|${s.class_name ?? ''}`)
+      );
 
       // ── Step 3: 将名单与统计合并——名单中有、统计中没有的学生补零 ──
       const summaryMap = new Map<string, StudentSummary>();
@@ -395,25 +397,26 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack, isSu
       }
       setStudents(mergedStudents);
 
-      // ── Step 4: 班级统计——合并 class_stats 视图 + 名单中没有练习记录的班级 ──
+      // 记录"自己的"学号集合，用于控制编辑按钮是否可见
+      setOwnedStudentNumbers(
+        new Set(roster.map(r => r.student_number).filter(Boolean))
+      );
+
+      // ── Step 4: 班级统计——只取自己学生所在的班级 ──
       const { data: classesData, error: classesError } = await supabase
         .from('class_stats')
         .select('*')
         .order('avg_accuracy', { ascending: false });
 
       if (classesError) throw classesError;
-      const allowedClasses = allowedStudentKeys
-        ? new Set(mergedStudents.map(s => s.class_name))
-        : null;
-      const filteredClasses = allowedClasses
-        ? (classesData || []).filter(c => allowedClasses.has(c.class_name))
-        : (classesData || []);
+      const allowedClassNames = new Set(mergedStudents.map(s => s.class_name).filter(Boolean));
+      const filteredClasses = (classesData || []).filter(c => allowedClassNames.has(c.class_name));
 
       // 把名单里有但 class_stats 没有的班级补进来（零练习）
       const classStatsMap = new Map<string, ClassStats>(
         filteredClasses.map(c => [c.class_name, c as ClassStats])
       );
-      const rosterClassMap = new Map<string, number>(); // class_name → student count
+      const rosterClassMap = new Map<string, number>();
       for (const s of mergedStudents) {
         const cn = s.class_name ?? '';
         if (cn) rosterClassMap.set(cn, (rosterClassMap.get(cn) ?? 0) + 1);
@@ -432,52 +435,39 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack, isSu
       }
       setClasses(mergedClasses);
 
-      // 获取每日统计
-      // 超管：使用 daily_stats 视图（全量）
-      // 普通教师：直接查 practice_records 按学生名单过滤后前端聚合，避免视图绕过 RLS
-      if (!isSuperAdmin && allowedStudentKeys !== null) {
-        const allowedNames = filteredStudents.map(s => s.student_name).filter(Boolean);
-        if (allowedNames.length === 0) {
-          setDailyStats([]);
-        } else {
-          const since = new Date();
-          since.setDate(since.getDate() - 30);
-          const { data: rawRecords } = await supabase
-            .from('practice_records')
-            .select('created_at, accuracy_rate, total_words, student_name')
-            .in('student_name', allowedNames)
-            .gte('created_at', since.toISOString());
-
-          // 前端聚合成 daily_stats 格式
-          const dayMap: Record<string, { count: number; students: Set<string>; accSum: number; words: number }> = {};
-          for (const r of rawRecords || []) {
-            const day = (r.created_at as string).slice(0, 10);
-            if (!dayMap[day]) dayMap[day] = { count: 0, students: new Set(), accSum: 0, words: 0 };
-            dayMap[day].count++;
-            dayMap[day].students.add(r.student_name);
-            dayMap[day].accSum += r.accuracy_rate ?? 0;
-            dayMap[day].words += r.total_words ?? 0;
-          }
-          const aggregated = Object.entries(dayMap)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .slice(-7)
-            .map(([day, v]) => ({
-              practice_date: day,
-              practice_count: v.count,
-              active_students: v.students.size,
-              avg_accuracy: v.count > 0 ? Math.round((v.accSum / v.count) * 10) / 10 : 0,
-              words_practiced: v.words,
-            }));
-          setDailyStats(aggregated);
-        }
+      // ── Step 5: 每日趋势——按自己的学生名单过滤 practice_records 后前端聚合 ──
+      const allowedNames = mergedStudents.map(s => s.student_name).filter(Boolean);
+      if (allowedNames.length === 0) {
+        setDailyStats([]);
       } else {
-        const { data: dailyData, error: dailyError } = await supabase
-          .from('daily_stats')
-          .select('*')
-          .limit(7)
-          .order('practice_date', { ascending: true });
-        if (dailyError) throw dailyError;
-        setDailyStats(dailyData || []);
+        const since = new Date();
+        since.setDate(since.getDate() - 30);
+        const { data: rawRecords } = await supabase
+          .from('practice_records')
+          .select('created_at, accuracy_rate, total_words, student_name')
+          .in('student_name', allowedNames)
+          .gte('created_at', since.toISOString());
+
+        const dayMap: Record<string, { count: number; students: Set<string>; accSum: number; words: number }> = {};
+        for (const r of rawRecords || []) {
+          const day = (r.created_at as string).slice(0, 10);
+          if (!dayMap[day]) dayMap[day] = { count: 0, students: new Set(), accSum: 0, words: 0 };
+          dayMap[day].count++;
+          dayMap[day].students.add(r.student_name);
+          dayMap[day].accSum += r.accuracy_rate ?? 0;
+          dayMap[day].words += r.total_words ?? 0;
+        }
+        const aggregated = Object.entries(dayMap)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .slice(-7)
+          .map(([day, v]) => ({
+            practice_date: day,
+            practice_count: v.count,
+            active_students: v.students.size,
+            avg_accuracy: v.count > 0 ? Math.round((v.accSum / v.count) * 10) / 10 : 0,
+            words_practiced: v.words,
+          }));
+        setDailyStats(aggregated);
       }
 
       // 获取难度统计
@@ -524,18 +514,32 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack, isSu
     setSaving(true);
     try {
       // 1. 更新 practice_records 表中该学生的所有记录
-      const { error: recordsError } = await supabase
+      //    加 teacher_id 过滤，避免误改其他教师同名学生的记录
+      let prQuery = supabase
         .from('practice_records')
         .update({ class_name: normalizedClassName })
         .eq('student_name', editingStudent.student_name);
+      if (!isSuperAdmin && teacherUserId) {
+        prQuery = prQuery.eq('teacher_id', teacherUserId);
+      } else if (editingStudent.student_number) {
+        // 超管：通过学号+姓名精确定位，避免跨租户误改
+        prQuery = prQuery.eq('student_number', editingStudent.student_number);
+      }
+      const { error: recordsError } = await prQuery;
 
       if (recordsError) throw recordsError;
 
-      // 2. 更新 students 表
-      const { error: studentsError } = await supabase
+      // 2. 更新 students 表（同样精确过滤）
+      let stQuery = supabase
         .from('students')
         .update({ class_name: normalizedClassName })
         .eq('student_name', editingStudent.student_name);
+      if (!isSuperAdmin && teacherUserId) {
+        stQuery = stQuery.eq('teacher_id', teacherUserId);
+      } else if (editingStudent.student_number) {
+        stQuery = stQuery.eq('student_number', editingStudent.student_number);
+      }
+      const { error: studentsError } = await stQuery;
 
       if (studentsError) throw studentsError;
 
@@ -1814,16 +1818,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack, isSu
                                 {student.class_name}
                               </span>
                             )}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleEditStudent(student);
-                              }}
-                              className="ml-2 p-1 hover:bg-slate-100 rounded transition-colors"
-                              title="编辑班级"
-                            >
-                              <Edit2 className="w-4 h-4 text-slate-400 hover:text-blue-600" />
-                            </button>
+                            {/* 只对"自己的学生"显示编辑按钮（非自己的学生只读）*/}
+                            {(!student.student_number || ownedStudentNumbers.has(student.student_number)) && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEditStudent(student);
+                                }}
+                                className="ml-2 p-1 hover:bg-slate-100 rounded transition-colors"
+                                title="编辑班级"
+                              >
+                                <Edit2 className="w-4 h-4 text-slate-400 hover:text-blue-600" />
+                              </button>
+                            )}
                           </div>
                           <p className="text-sm text-slate-500 mt-1">
                             练习 {student.total_practices} 次 ·

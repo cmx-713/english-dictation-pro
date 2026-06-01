@@ -76,14 +76,15 @@ export default function ClassManagement({ teacherUserId, isSuperAdmin }: ClassMa
   const loadStudents = useCallback(async () => {
     setLoading(true);
     try {
+      // 班级管理始终只管理"自己"的学生，超管也不例外
+      // （超管在"学生"/"班级"统计 Tab 可查看全局数据，但这里只管自己的名单）
       let query = supabase
         .from('students')
         .select('id, student_name, student_number, class_name, teacher_id')
         .order('class_name')
         .order('student_name');
 
-      // 非超管只查自己的学生（RLS 也会过滤，这里双保险）
-      if (!isSuperAdmin && teacherUserId) {
+      if (teacherUserId) {
         query = query.eq('teacher_id', teacherUserId);
       }
 

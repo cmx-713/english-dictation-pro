@@ -108,12 +108,26 @@ export const saveRecord = (
     // 先尝试更新/插入学生信息
     const updateStudentAndRecord = async () => {
       let studentId = null;
+      let teacherId: string | null = null;
       
       // 标准化班级名称
       const normalizedClassName = normalizeClassName(metadata?.className || '');
 
       if (metadata?.studentNumber && metadata?.studentName) {
         try {
+          // 先查询学生记录，获取 teacher_id（教师预导入时已设置）
+          const { data: existingStudent } = await supabase
+            .from('students')
+            .select('id, teacher_id')
+            .eq('student_number', metadata.studentNumber)
+            .maybeSingle();
+
+          if (existingStudent) {
+            studentId = existingStudent.id;
+            teacherId = existingStudent.teacher_id ?? null;
+          }
+
+          // 更新 last_practice_at（不覆盖 teacher_id）
           const { data: studentData, error: studentError } = await supabase
             .from('students')
             .upsert({
@@ -121,15 +135,18 @@ export const saveRecord = (
               student_name: metadata.studentName,
               class_name: normalizedClassName,
               last_practice_at: new Date().toISOString(),
-              total_practices: 1 // This is naive, ideally we increment, but upsert simple is fine for now
+              total_practices: 1,
+              // teacher_id 不在此处，避免覆盖已有归属
             }, { onConflict: 'student_number' })
-            .select()
+            .select('id, teacher_id')
             .single();
 
           if (studentError) {
             console.error('更新学生信息失败:', studentError);
           } else if (studentData) {
             studentId = studentData.id;
+            // 若查询时未拿到 teacher_id，用 upsert 返回值补充
+            if (!teacherId) teacherId = studentData.teacher_id ?? null;
           }
         } catch (e) {
           console.error('学生同步异常:', e);
@@ -141,6 +158,7 @@ export const saveRecord = (
         student_name: metadata?.studentName || null,
         class_name: normalizedClassName || null,
         student_id: studentId, // 关联 ID
+        teacher_id: teacherId, // 归属教师（用于多租户数据隔离）
 
         // 练习内容
         raw_text: rawText,
