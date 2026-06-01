@@ -47,6 +47,16 @@ CREATE POLICY "Enable select for anonymous users" ON dictation_materials FOR SEL
 -- In production, you might restrict this, but for now it's fine.
 CREATE POLICY "Enable insert for anonymous users" ON dictation_materials FOR INSERT TO anon WITH CHECK (true);
 
+-- GRANT 权限 for students
+GRANT SELECT, INSERT, UPDATE ON public.students TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.students TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.students TO service_role;
+
+-- GRANT 权限 for dictation_materials
+GRANT SELECT, INSERT ON public.dictation_materials TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.dictation_materials TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.dictation_materials TO service_role;
+
 -- 3. Add foreign key to practice_records (optional, for linking)
 -- We won't enforce FK to keep it flexible, but we can store student_id
 ALTER TABLE practice_records ADD COLUMN IF NOT EXISTS student_id UUID;

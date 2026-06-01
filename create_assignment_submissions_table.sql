@@ -29,3 +29,9 @@ CREATE INDEX IF NOT EXISTS idx_assignment_submissions_class_name
 
 CREATE INDEX IF NOT EXISTS idx_assignment_submissions_submitted_at
   ON assignment_submissions (submitted_at DESC);
+
+-- GRANT 权限（Supabase 2026年10月30日后新表必须显式授权）
+-- RLS 策略在 rls_assignment_submissions.sql 中单独定义
+GRANT SELECT, INSERT, UPDATE ON public.assignment_submissions TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.assignment_submissions TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.assignment_submissions TO service_role;

@@ -267,6 +267,22 @@ INSERT INTO practice_records (
 -- SELECT * FROM daily_stats LIMIT 7;
 
 -- ============================================
+-- GRANT 权限（Supabase 2026年10月30日后新表必须显式授权）
+-- ============================================
+
+-- practice_records 表
+GRANT SELECT, INSERT ON public.practice_records TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.practice_records TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.practice_records TO service_role;
+
+-- 视图（视图需要单独授权）
+GRANT SELECT ON public.student_summary TO anon, authenticated, service_role;
+GRANT SELECT ON public.class_stats TO anon, authenticated, service_role;
+GRANT SELECT ON public.daily_stats TO anon, authenticated, service_role;
+GRANT SELECT ON public.difficulty_stats TO anon, authenticated, service_role;
+GRANT SELECT ON public.input_method_stats TO anon, authenticated, service_role;
+
+-- ============================================
 -- 完成！
 -- ============================================
 

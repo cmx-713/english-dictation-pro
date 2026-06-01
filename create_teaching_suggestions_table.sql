@@ -37,3 +37,8 @@ ALTER TABLE public.teaching_suggestions ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "teaching_suggestions_all" ON public.teaching_suggestions;
 CREATE POLICY "teaching_suggestions_all"
 ON public.teaching_suggestions FOR ALL USING (true) WITH CHECK (true);
+
+-- GRANT 权限（Supabase 2026年10月30日后新表必须显式授权）
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.teaching_suggestions TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.teaching_suggestions TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.teaching_suggestions TO service_role;

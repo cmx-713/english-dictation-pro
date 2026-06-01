@@ -214,6 +214,33 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ============================================
+-- GRANT 权限（Supabase 2026年10月30日后新表必须显式授权）
+-- ============================================
+
+-- 方案2中的可选新增表（如已执行建表）
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.students TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.students TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.students TO service_role;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.text_library TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.text_library TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.text_library TO service_role;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.learning_progress TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.learning_progress TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.learning_progress TO service_role;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.error_details TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.error_details TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.error_details TO service_role;
+
+-- 视图权限
+GRANT SELECT ON public.daily_practice_stats TO anon, authenticated, service_role;
+GRANT SELECT ON public.student_performance_summary TO anon, authenticated, service_role;
+GRANT SELECT ON public.difficulty_analysis TO anon, authenticated, service_role;
+GRANT SELECT ON public.time_pattern_analysis TO anon, authenticated, service_role;
+
+-- ============================================
 -- 数据清理和维护
 -- ============================================
 

@@ -4,9 +4,11 @@ import { normalizeClassName } from '../utils/classNameNormalizer';
 
 interface StudentInfoProps {
   onInfoChange?: (name: string, studentNumber: string, className: string) => void;
+  /** 用户点击"修改"进入编辑模式时触发，通知父组件暂时锁定练习区 */
+  onEditStart?: () => void;
 }
 
-export const StudentInfo: React.FC<StudentInfoProps> = ({ onInfoChange }) => {
+export const StudentInfo: React.FC<StudentInfoProps> = ({ onInfoChange, onEditStart }) => {
   const [studentName, setStudentName] = useState('');
   const [studentNumber, setStudentNumber] = useState('');
   const [className, setClassName] = useState('');
@@ -70,6 +72,7 @@ export const StudentInfo: React.FC<StudentInfoProps> = ({ onInfoChange }) => {
   const handleEdit = () => {
     setIsEditing(true);
     setIsSaved(false);
+    onEditStart?.();
   };
 
   if (!isEditing && isSaved) {

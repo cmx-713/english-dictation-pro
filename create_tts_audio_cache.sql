@@ -27,6 +27,11 @@ CREATE POLICY "tts_audio_cache_select" ON tts_audio_cache FOR SELECT USING (true
 CREATE POLICY "tts_audio_cache_insert" ON tts_audio_cache FOR INSERT WITH CHECK (true);
 CREATE POLICY "tts_audio_cache_update" ON tts_audio_cache FOR UPDATE USING (true);
 
+-- GRANT 权限（Supabase 2026年10月30日后新表必须显式授权）
+GRANT SELECT, INSERT, UPDATE ON public.tts_audio_cache TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.tts_audio_cache TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.tts_audio_cache TO service_role;
+
 -- Storage：公开读 + 匿名写（课堂产品简化版；生产环境建议改为 Edge Function + service_role）
 -- 若 bucket 尚未创建，以下语句可能报错，创建 bucket 后再执行。
 INSERT INTO storage.buckets (id, name, public)

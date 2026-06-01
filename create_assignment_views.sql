@@ -73,3 +73,7 @@ SELECT
 FROM class_assignments a
 LEFT JOIN assignment_submissions s ON s.assignment_id = a.id
 ORDER BY a.created_at DESC, s.submitted_at DESC NULLS LAST;
+
+-- GRANT 权限（视图需要单独授权）
+GRANT SELECT ON public.assignment_completion_stats TO anon, authenticated, service_role;
+GRANT SELECT ON public.assignment_student_progress TO anon, authenticated, service_role;

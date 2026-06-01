@@ -1,10 +1,8 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { FileText, ArrowRight, Loader2, Mic, Camera, Image, Book, ClipboardList } from 'lucide-react';
-import { StudentInfo } from './StudentInfo';
+import React, { useState, useEffect, useRef } from 'react';
+import { FileText, ArrowRight, Loader2, Mic, Camera, Image, Book, ClipboardList, LogIn } from 'lucide-react';
 import { getPendingSuggestionTaskLocal, updatePendingSuggestionTaskStatusLocal, syncSuggestionTaskStatusToSupabase } from '../utils/suggestionTaskManager';
 import { supabase } from '../lib/supabase';
 import type { DictationDifficulty } from '../utils/textProcessing';
-// 引入 OCR 库
 import Tesseract from 'tesseract.js';
 
 interface SetupScreenProps {
@@ -18,14 +16,16 @@ interface SetupScreenProps {
     inputMethod: 'text' | 'voice' | 'image';
     assignmentId?: string;
     assignmentTitle?: string;
-    /** 作业对应的 dictation_materials.id，用于 TTS 缓存 */
     libraryMaterialId?: string;
-    /** 听写难度：影响句子拆分粒度 */
     difficulty?: DictationDifficulty;
   }) => void;
   hasLatestReport?: boolean;
   latestReportAt?: string;
   onViewLatestReport?: () => void;
+  /** 当前登录的学生信息（null = 未登录） */
+  studentIdentity: { name: string; number: string; className: string } | null;
+  /** 导航到登录页 */
+  onNavigateToLogin: () => void;
 }
 
 export const SetupScreen: React.FC<SetupScreenProps> = ({
@@ -36,10 +36,11 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
   hasLatestReport = false,
   latestReportAt,
   onViewLatestReport,
+  studentIdentity,
+  onNavigateToLogin,
 }) => {
   const [text, setText] = useState(initialText);
 
-  // Update text if initialText changes (e.g. coming back from library)
   useEffect(() => {
     if (initialText) {
       setText(initialText);
@@ -53,11 +54,6 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
   const [isRecording, setIsRecording] = useState(false);
   const [recognition, setRecognition] = useState<any>(null);
 
-  // 学生信息
-  const [studentName, setStudentName] = useState('');
-  const [studentNumber, setStudentNumber] = useState('');
-  const [className, setClassName] = useState('');
-
   // 听写难度（持久化到 localStorage）
   const [difficulty, setDifficulty] = useState<DictationDifficulty>(() => {
     try {
@@ -69,6 +65,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
   useEffect(() => {
     try { localStorage.setItem('dictation_difficulty', difficulty); } catch { /* ignore */ }
   }, [difficulty]);
+
   const [pendingTask, setPendingTask] = useState<ReturnType<typeof getPendingSuggestionTaskLocal>>(null);
 
   // 班级作业
@@ -78,22 +75,19 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
   const [assignmentStatus, setAssignmentStatus] = useState<AssignmentSubmissionStatus | null>(null);
   const [assignmentLoading, setAssignmentLoading] = useState(false);
   const [startingAssignment, setStartingAssignment] = useState(false);
-  const lastCheckedClassRef = useRef('');
+  const lastCheckedKeyRef = useRef('');
 
-  // 每次组件挂载（从练习页返回时）都强制重新检查作业状态
+  // 登录提示弹窗
+  const [showLoginWarning, setShowLoginWarning] = useState(false);
+
+  // 每次挂载强制重新检查作业状态
   useEffect(() => {
-    lastCheckedClassRef.current = '';
+    lastCheckedKeyRef.current = '';
     setAssignmentStatus(null);
     setClassAssignment(null);
   }, []);
 
-  const handleStudentInfoChange = useCallback((name: string, number: string, classN: string) => {
-    setStudentName(name);
-    setStudentNumber(number);
-    setClassName(classN);
-  }, []);
-
-  const loadClassAssignment = async (cls: string) => {
+  const loadClassAssignment = async (cls: string, studentName: string) => {
     setAssignmentLoading(true);
     try {
       const today = new Date().toISOString().split('T')[0];
@@ -115,14 +109,10 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
             .eq('assignment_id', data.id)
             .eq('student_name', studentName.trim())
             .maybeSingle();
-          if (submitted) {
-            setAssignmentStatus({
-              submittedAt: submitted.submitted_at,
-              accuracyRate: submitted.accuracy_rate,
-            });
-          } else {
-            setAssignmentStatus(null);
-          }
+          setAssignmentStatus(submitted ? {
+            submittedAt: submitted.submitted_at,
+            accuracyRate: submitted.accuracy_rate,
+          } : null);
         } else {
           setAssignmentStatus(null);
         }
@@ -133,31 +123,33 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
     } catch {
       setClassAssignment(null);
       setAssignmentStatus(null);
-    } finally { setAssignmentLoading(false); }
+    } finally {
+      setAssignmentLoading(false);
+    }
   };
 
-  // 班级变化时再检查作业，避免重复轮询导致“一直检查中”
+  // 学生身份变化时重新检查作业
   useEffect(() => {
-    const normalizedClass = className.trim();
-    const normalizedStudent = studentName.trim();
-    const checkKey = `${normalizedClass}__${normalizedStudent}`;
+    const cls = studentIdentity?.className?.trim() || '';
+    const name = studentIdentity?.name?.trim() || '';
+    const checkKey = `${cls}__${name}`;
 
-    if (!normalizedClass) {
+    if (!cls) {
       setAssignmentLoading(false);
       setClassAssignment(null);
       setAssignmentStatus(null);
-      lastCheckedClassRef.current = '';
+      lastCheckedKeyRef.current = '';
       return;
     }
+    if (lastCheckedKeyRef.current === checkKey) return;
+    lastCheckedKeyRef.current = checkKey;
+    void loadClassAssignment(cls, name);
+  }, [studentIdentity?.className, studentIdentity?.name]);
 
-    // 同一“班级+学生”不重复查
-    if (lastCheckedClassRef.current === checkKey) return;
-    lastCheckedClassRef.current = checkKey;
-    void loadClassAssignment(normalizedClass);
-  }, [className, studentName]);
-
+  // 作业开始
   const handleStartAssignment = async () => {
     if (!classAssignment) return;
+    if (!studentIdentity) { setShowLoginWarning(true); return; }
     setStartingAssignment(true);
     try {
       const { data, error } = await supabase
@@ -166,11 +158,10 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
         .eq('id', classAssignment.material_id)
         .single();
       if (error || !data?.content) { alert('加载素材失败，请稍后重试'); return; }
-      if (!studentName.trim() || !studentNumber.trim()) { alert('请先填写学生信息'); return; }
       onStart(data.content, {
-        studentName,
-        studentNumber,
-        className,
+        studentName: studentIdentity.name,
+        studentNumber: studentIdentity.number,
+        className: studentIdentity.className,
         inputMethod: 'text',
         assignmentId: classAssignment.id,
         assignmentTitle: classAssignment.material_title,
@@ -180,23 +171,24 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
     finally { setStartingAssignment(false); }
   };
 
+  // 待办建议
   useEffect(() => {
-    if (!studentNumber) {
+    if (!studentIdentity?.number) {
       setPendingTask(null);
       return;
     }
-    setPendingTask(getPendingSuggestionTaskLocal(studentNumber));
-  }, [studentNumber]);
+    setPendingTask(getPendingSuggestionTaskLocal(studentIdentity.number));
+  }, [studentIdentity?.number]);
 
   const handleContinuePendingTask = () => {
-    if (!pendingTask) return;
+    if (!pendingTask || !studentIdentity) return;
     updatePendingSuggestionTaskStatusLocal('done');
     void syncSuggestionTaskStatusToSupabase(pendingTask.id, 'done');
     setPendingTask(null);
     onStart(pendingTask.retry_text, {
-      studentName,
-      studentNumber,
-      className,
+      studentName: studentIdentity.name,
+      studentNumber: studentIdentity.number,
+      className: studentIdentity.className,
       inputMethod: 'text',
     });
   };
@@ -208,49 +200,61 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
     setPendingTask(null);
   };
 
-  // --- 真正的图片识别逻辑 ---
+  // 统一"开始练习"入口，未登录时弹提示
+  const startPractice = (
+    practiceText: string,
+    inputMethod: 'text' | 'voice' | 'image',
+    options?: {
+      assignmentId?: string;
+      assignmentTitle?: string;
+      libraryMaterialId?: string;
+      difficulty?: DictationDifficulty;
+    }
+  ) => {
+    if (!studentIdentity) {
+      setShowLoginWarning(true);
+      return;
+    }
+    onStart(practiceText, {
+      studentName: studentIdentity.name,
+      studentNumber: studentIdentity.number,
+      className: studentIdentity.className,
+      inputMethod,
+      ...options,
+      difficulty: options?.difficulty ?? difficulty,
+    });
+  };
+
+  // 图片 OCR
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     if (!file.type.startsWith('image/')) {
       alert('请上传图片文件（JPG、PNG等格式）');
       return;
     }
-
     setIsProcessing(true);
     setProcessingStatus('正在初始化识别引擎...');
-
     try {
-      // 调用 Tesseract 进行识别
-      const result = await Tesseract.recognize(
-        file,
-        'eng', // 语言：英语
-        {
-          logger: (m) => {
-            // 更新进度条状态
-            if (m.status === 'recognizing text') {
-              setProcessingStatus(`正在识别文字... ${(m.progress * 100).toFixed(0)}%`);
-            } else if (m.status === 'loading tesseract core') {
-              setProcessingStatus('正在加载核心组件...');
-            } else {
-              setProcessingStatus('正在处理图片...');
-            }
+      const result = await Tesseract.recognize(file, 'eng', {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            setProcessingStatus(`正在识别文字... ${(m.progress * 100).toFixed(0)}%`);
+          } else if (m.status === 'loading tesseract core') {
+            setProcessingStatus('正在加载核心组件...');
+          } else {
+            setProcessingStatus('正在处理图片...');
           }
         }
-      );
-
-      // 识别成功
+      });
       const recognizedText = result.data.text;
       if (!recognizedText.trim()) {
         alert('未在图片中识别到清晰的英文，请重试。');
       } else {
         setText(recognizedText);
-        // 自动切换到文本模式，让用户看到结果
         setMode('text');
       }
-    } catch (error) {
-      console.error('Error processing image:', error);
+    } catch {
       alert('图片识别失败，请检查网络或重试。');
     } finally {
       setIsProcessing(false);
@@ -260,45 +264,35 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
 
   const [voiceError, setVoiceError] = useState<string | null>(null);
 
-  // 实时语音识别
+  // 语音识别
   const handleVoiceRecording = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
     if (!SpeechRecognition) {
       setVoiceError('您的浏览器不支持语音识别。请使用 Chrome 浏览器，并确保网络正常。');
       return;
     }
-
     if (isRecording && recognition) {
       recognition.stop();
       setIsRecording(false);
       return;
     }
-
     setVoiceError(null);
     const recognizer = new SpeechRecognition();
     recognizer.continuous = true;
     recognizer.interimResults = true;
     recognizer.lang = 'en-US';
-
     let finalTranscript = '';
-
     recognizer.onresult = (event: any) => {
       setVoiceError(null);
       let interimTranscript = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript + ' ';
-        } else {
-          interimTranscript += transcript;
-        }
+        if (event.results[i].isFinal) { finalTranscript += transcript + ' '; }
+        else { interimTranscript += transcript; }
       }
       setText((finalTranscript + interimTranscript).trim());
     };
-
     recognizer.onerror = (event: any) => {
-      console.error('Speech recognition error:', event.error);
       setIsRecording(false);
       const errorMessages: Record<string, string> = {
         'not-allowed': '麦克风权限被拒绝。请点击浏览器地址栏左侧的锁形图标，允许麦克风访问，然后刷新页面重试。',
@@ -308,17 +302,12 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
         'service-not-allowed': '语音识别服务被阻止。请确保页面通过 HTTPS 访问，并使用 Chrome 浏览器。',
         'aborted': '语音识别已中止，请重新点击按钮开始。',
       };
-      const msg = errorMessages[event.error] ?? `识别出错（${event.error}），请重试。`;
-      setVoiceError(msg);
+      setVoiceError(errorMessages[event.error] ?? `识别出错（${event.error}），请重试。`);
     };
-
     recognizer.onend = () => {
       setIsRecording(false);
-      if (finalTranscript.trim()) {
-        setText(finalTranscript.trim());
-      }
+      if (finalTranscript.trim()) setText(finalTranscript.trim());
     };
-
     try {
       recognizer.start();
       setRecognition(recognizer);
@@ -330,14 +319,46 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
 
   return (
     <div className="max-w-3xl mx-auto mt-10 px-4">
+
+      {/* ── 请先登录弹窗 ── */}
+      {showLoginWarning && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={() => setShowLoginWarning(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl p-6 max-w-xs mx-4 text-center"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-3">
+              <LogIn className="text-amber-600" size={24} />
+            </div>
+            <h3 className="text-lg font-bold text-slate-900 mb-2">请先登录</h3>
+            <p className="text-sm text-slate-500 mb-5">需要登录后才能开始练习</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowLoginWarning(false)}
+                className="flex-1 py-2.5 text-sm font-medium text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => { setShowLoginWarning(false); onNavigateToLogin(); }}
+                className="flex-1 py-2.5 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 transition-colors"
+              >
+                去登录
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="text-center mb-10">
         <h2 className="text-3xl font-bold text-slate-900 mb-4">开始你的听力训练</h2>
         <p className="text-slate-600">粘贴任何你想练习的英语文本，系统会自动为你生成听力材料。</p>
       </div>
 
       <div className="bg-white rounded-xl shadow-lg p-6 md:p-8 border border-slate-200">
-        {/* 学生信息输入 */}
-        <StudentInfo onInfoChange={handleStudentInfoChange} />
 
         {/* 本班作业提示卡 */}
         {assignmentLoading && (
@@ -358,10 +379,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
                 {assignmentStatus && (
                   <p className="text-xs text-emerald-700 mt-1">
                     ✅ 你已提交：{new Date(assignmentStatus.submittedAt).toLocaleString('zh-CN', {
-                      month: '2-digit',
-                      day: '2-digit',
-                      hour: '2-digit',
-                      minute: '2-digit',
+                      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
                     })}
                     {assignmentStatus.accuracyRate != null ? ` · 正确率 ${Math.round(Number(assignmentStatus.accuracyRate))}%` : ''}
                   </p>
@@ -373,11 +391,14 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
               disabled={startingAssignment}
               className="w-full mt-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {startingAssignment ? <><Loader2 className="w-4 h-4 animate-spin" />加载中...</> : <><ArrowRight className="w-4 h-4" />{assignmentStatus ? '再次练习该作业' : '立即完成作业'}</>}
+              {startingAssignment
+                ? <><Loader2 className="w-4 h-4 animate-spin" />加载中...</>
+                : <><ArrowRight className="w-4 h-4" />{assignmentStatus ? '再次练习该作业' : '立即完成作业'}</>}
             </button>
           </div>
         )}
 
+        {/* 待办建议卡 */}
         {pendingTask && (
           <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
             <p className="text-sm font-semibold text-amber-800">📌 上次练习建议未完成</p>
@@ -406,6 +427,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
           </div>
         )}
 
+        {/* 顶部操作按钮行 */}
         <div className="flex gap-2 mb-4">
           <button
             onClick={onOpenLibrary}
@@ -425,10 +447,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
               {latestReportAt && (
                 <p className="mt-1 text-center md:text-left text-xs text-slate-500">
                   上次报告：{new Date(latestReportAt).toLocaleString('zh-CN', {
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
+                    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
                   })}
                 </p>
               )}
@@ -436,31 +455,30 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
           )}
         </div>
 
+        {/* 输入方式 Tabs */}
         <div className="flex gap-3 mb-6 border-b border-slate-100 pb-4">
           <button
             onClick={() => setMode('text')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${mode === 'text' ? 'bg-blue-50 text-blue-700 font-semibold ring-1 ring-blue-100' : 'text-slate-500 hover:bg-slate-50'}`}
           >
-            <FileText size={20} />
-            文本导入
+            <FileText size={20} />文本导入
           </button>
           <button
             onClick={() => setMode('voice')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${mode === 'voice' ? 'bg-blue-50 text-blue-700 font-semibold ring-1 ring-blue-100' : 'text-slate-500 hover:bg-slate-50'}`}
           >
-            <Mic size={20} />
-            语音识别
+            <Mic size={20} />语音识别
           </button>
           <button
             onClick={() => setMode('image')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${mode === 'image' ? 'bg-blue-50 text-blue-700 font-semibold ring-1 ring-blue-100' : 'text-slate-500 hover:bg-slate-50'}`}
           >
-            <Camera size={20} />
-            图片识别
+            <Camera size={20} />图片识别
           </button>
         </div>
 
-        {mode === 'text' ? (
+        {/* 文本模式 */}
+        {mode === 'text' && (
           <div className="space-y-4">
             <DifficultySelector value={difficulty} onChange={setDifficulty} />
             <textarea
@@ -471,20 +489,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
             />
             <div className="flex justify-end">
               <button
-                onClick={() => {
-                  if (!studentName.trim() || !studentNumber.trim()) {
-                    alert('请先填写学生信息（姓名和学号）');
-                    return;
-                  }
-                  onStart(text, {
-                    studentName,
-                    studentNumber,
-                    className,
-                    inputMethod: 'text',
-                    libraryMaterialId: initialLibraryMaterialId || undefined,
-                    difficulty,
-                  });
-                }}
+                onClick={() => startPractice(text, 'text', { libraryMaterialId: initialLibraryMaterialId || undefined })}
                 disabled={!text.trim()}
                 className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-8 py-3 rounded-lg font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg"
               >
@@ -493,48 +498,36 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
               </button>
             </div>
           </div>
-        ) : mode === 'voice' ? (
+        )}
+
+        {/* 语音模式 */}
+        {mode === 'voice' && (
           <div className="space-y-6">
             <div className="bg-gradient-to-br from-blue-50 to-slate-50 border-2 border-blue-100 rounded-lg p-6">
-              <div className="flex items-start justify-between mb-4">
-                <div>
-                  <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2">
-                    <Mic className="text-blue-700" size={20} />
-                    实时语音识别
-                  </h3>
-                  <p className="text-sm text-slate-600">
-                    点击麦克风按钮，朗读英语内容，系统会实时转换为文字
-                  </p>
-                </div>
+              <div className="mb-4">
+                <h3 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2">
+                  <Mic className="text-blue-700" size={20} />实时语音识别
+                </h3>
+                <p className="text-sm text-slate-600">点击麦克风按钮，朗读英语内容，系统会实时转换为文字</p>
               </div>
-
               <button
                 onClick={handleVoiceRecording}
-                className={`w-full py-4 rounded-xl font-bold shadow-lg shadow-blue-100 transition-all flex items-center justify-center gap-2 text-lg ${isRecording
-                  ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse'
-                  : 'bg-blue-700 hover:bg-blue-800 text-white shadow-md'
-                  }`}
+                className={`w-full py-4 rounded-xl font-bold shadow-lg shadow-blue-100 transition-all flex items-center justify-center gap-2 text-lg ${
+                  isRecording ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse' : 'bg-blue-700 hover:bg-blue-800 text-white shadow-md'
+                }`}
               >
                 <Mic size={24} />
                 {isRecording ? '点击停止录音' : '开始语音识别'}
               </button>
-
-              {/* 录音中：实时内容预览（只读） */}
               {isRecording && text && (
                 <div className="mt-3 p-3 bg-white border border-blue-200 rounded-lg text-sm text-slate-700 max-h-32 overflow-y-auto">
                   <p className="text-xs text-blue-400 mb-1">实时识别中…</p>
                   {text}
                 </div>
               )}
-
-              {/* 错误提示 */}
               {voiceError && (
-                <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-                  ⚠️ {voiceError}
-                </div>
+                <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">⚠️ {voiceError}</div>
               )}
-
-              {/* 兼容性说明 */}
               <div className="mt-3 p-3 bg-slate-100 rounded-lg text-xs text-slate-500 space-y-1">
                 <p className="font-medium text-slate-600">使用说明</p>
                 <p>· 首次使用需在浏览器弹窗中点击"允许"授权麦克风</p>
@@ -544,21 +537,13 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
                 <p>· <strong>电脑（Windows）</strong>：Chrome / Edge 依赖 Google 服务，国内网络下通常无法使用 ❌</p>
                 <p>· Firefox 不支持此功能 ❌</p>
               </div>
-
             </div>
-
-            {/* 识别结果：可编辑 textarea，方便用户核查和修改 */}
             {text && mode === 'voice' && (
               <div className="space-y-3">
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <p className="text-sm font-medium text-slate-700">已识别内容（可直接修改）</p>
-                    <button
-                      onClick={() => setText('')}
-                      className="text-xs text-slate-400 hover:text-red-500 transition-colors"
-                    >
-                      清空
-                    </button>
+                    <button onClick={() => setText('')} className="text-xs text-slate-400 hover:text-red-500 transition-colors">清空</button>
                   </div>
                   <textarea
                     value={text}
@@ -572,24 +557,20 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
                 <DifficultySelector value={difficulty} onChange={setDifficulty} />
                 <div className="flex justify-end">
                   <button
-                    onClick={() => {
-                      if (!studentName.trim() || !studentNumber.trim()) {
-                        alert('请先填写学生信息（姓名和学号）');
-                        return;
-                      }
-                      onStart(text, { studentName, studentNumber, className, inputMethod: 'voice', difficulty });
-                    }}
+                    onClick={() => startPractice(text, 'voice')}
                     disabled={!text.trim()}
                     className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-8 py-3 rounded-lg font-semibold transition-all shadow-md disabled:opacity-50"
                   >
-                    开始练习
-                    <ArrowRight size={20} />
+                    开始练习<ArrowRight size={20} />
                   </button>
                 </div>
               </div>
             )}
           </div>
-        ) : (
+        )}
+
+        {/* 图片模式 */}
+        {mode === 'image' && (
           <div className="space-y-6">
             <div className="relative h-64 flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg bg-slate-50 hover:bg-blue-50 hover:border-blue-300 transition-colors group">
               {isProcessing ? (
@@ -616,7 +597,6 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
                 </>
               )}
             </div>
-
             {text && mode === 'image' && (
               <div className="space-y-4">
                 <textarea
@@ -627,26 +607,21 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({
                 />
                 <div className="flex justify-end">
                   <button
-                    onClick={() => {
-                      if (!studentName.trim() || !studentNumber.trim()) {
-                        alert('请先填写学生信息（姓名和学号）');
-                        return;
-                      }
-                      onStart(text, { studentName, studentNumber, className, inputMethod: 'image', difficulty });
-                    }}
+                    onClick={() => startPractice(text, 'image')}
                     disabled={!text.trim()}
                     className="flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-8 py-3 rounded-lg font-semibold transition-all shadow-md disabled:opacity-50"
                   >
-                    开始练习
-                    <ArrowRight size={20} />
+                    开始练习<ArrowRight size={20} />
                   </button>
                 </div>
               </div>
             )}
           </div>
         )}
+
       </div>
 
+      {/* 特性介绍 */}
       <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
         <div className="p-4">
           <div className="w-10 h-10 bg-blue-50 text-blue-700 rounded-full flex items-center justify-center mx-auto mb-3 font-bold border border-blue-100">1</div>

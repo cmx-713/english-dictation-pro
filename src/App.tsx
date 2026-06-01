@@ -7,12 +7,13 @@ import { HistoryScreen } from './components/HistoryScreen';
 import { ReviewScreen } from './components/ReviewScreen';
 import { TeacherDashboard } from './components/TeacherDashboard';
 import { LibraryScreen, DictationMaterial } from './components/LibraryScreen';
+import { LoginScreen } from './components/LoginScreen';
 import { saveRecord } from './utils/historyManager';
 import { registerStudent } from './utils/studentManager';
 import { createSuggestionTask, savePendingSuggestionTaskLocal, syncSuggestionTaskToSupabase } from './utils/suggestionTaskManager';
 import { upsertAssignmentSubmission } from './utils/assignmentSubmissionManager';
 
-type AppMode = 'setup' | 'practice' | 'results' | 'history' | 'review' | 'teacher' | 'library';
+type AppMode = 'setup' | 'practice' | 'results' | 'history' | 'review' | 'teacher' | 'library' | 'login';
 const LATEST_RESULTS_KEY = 'latest_results_report_v1';
 interface LatestResultsPayload {
   results: SentenceResult[];
@@ -22,6 +23,7 @@ interface LatestResultsPayload {
 // URL path <-> AppMode mapping
 const pathToMode: Record<string, AppMode> = {
   '/': 'setup',
+  '/login': 'login',
   '/library': 'library',
   '/practice': 'practice',
   '/results': 'results',
@@ -32,6 +34,7 @@ const pathToMode: Record<string, AppMode> = {
 
 const modeToPath: Record<AppMode, string> = {
   setup: '/',
+  login: '/login',
   library: '/library',
   practice: '/practice',
   results: '/results',
@@ -74,6 +77,35 @@ function App() {
       return null;
     }
   }, []);
+
+  // 学生身份（全局，初始化自 localStorage）
+  const [studentIdentity, setStudentIdentity] = useState<{
+    name: string;
+    number: string;
+    className: string;
+  } | null>(() => {
+    try {
+      const name = localStorage.getItem('student_name')?.trim() || '';
+      const number = localStorage.getItem('student_number')?.trim() || '';
+      const className = localStorage.getItem('student_class') || '';
+      return name && number ? { name, number, className } : null;
+    } catch { return null; }
+  });
+
+  const handleLogin = (name: string, number: string, className: string) => {
+    setStudentIdentity({ name, number, className });
+    navigateTo('setup');
+  };
+
+  const handleLogout = () => {
+    try {
+      localStorage.removeItem('student_name');
+      localStorage.removeItem('student_number');
+      localStorage.removeItem('student_class');
+    } catch { /* ignore */ }
+    setStudentIdentity(null);
+    navigateTo('login');
+  };
 
   const [studentMetadata, setStudentMetadata] = useState<{
     studentName: string;
@@ -223,7 +255,13 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
-      <Header onRestart={handleRestart} onViewHistory={handleViewHistory} />
+      <Header
+        onRestart={handleRestart}
+        onViewHistory={handleViewHistory}
+        studentIdentity={studentIdentity}
+        onLogin={() => navigateTo('login')}
+        onLogout={handleLogout}
+      />
 
       <main className="py-8 relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="relative z-10">
@@ -236,6 +274,8 @@ function App() {
               hasLatestReport={Boolean(loadLatestResults())}
               latestReportAt={loadLatestResults()?.savedAt}
               onViewLatestReport={handleViewLatestReport}
+              studentIdentity={studentIdentity}
+              onNavigateToLogin={() => navigateTo('login')}
             />
           )}
 
@@ -291,6 +331,13 @@ function App() {
 
           {mode === 'teacher' && (
             <TeacherDashboard onBack={handleRestart} />
+          )}
+
+          {mode === 'login' && (
+            <LoginScreen
+              onLoginSuccess={handleLogin}
+              onBack={handleRestart}
+            />
           )}
         </div>
       </main>

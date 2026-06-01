@@ -15,7 +15,13 @@ CREATE TABLE IF NOT EXISTS class_assignments (
 CREATE INDEX IF NOT EXISTS idx_class_assignments_class
   ON class_assignments (class_name, is_active, due_date);
 
--- （可选）开放读权限，让学生端可查询
--- ALTER TABLE class_assignments ENABLE ROW LEVEL SECURITY;
--- CREATE POLICY "allow read" ON class_assignments FOR SELECT USING (true);
--- CREATE POLICY "allow all" ON class_assignments FOR ALL USING (true);
+-- RLS + GRANT（Supabase 2026年10月30日后新表必须显式授权）
+ALTER TABLE public.class_assignments ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "class_assignments_all" ON public.class_assignments;
+CREATE POLICY "class_assignments_all"
+  ON public.class_assignments FOR ALL USING (true) WITH CHECK (true);
+
+GRANT SELECT ON public.class_assignments TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.class_assignments TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.class_assignments TO service_role;
