@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import { Header } from './components/Header';
 import { SetupScreen } from './components/SetupScreen';
 import { PracticeScreen, SentenceResult } from './components/PracticeScreen';
@@ -6,12 +7,14 @@ import { ResultsScreen } from './components/ResultsScreen';
 import { HistoryScreen } from './components/HistoryScreen';
 import { ReviewScreen } from './components/ReviewScreen';
 import { TeacherDashboard } from './components/TeacherDashboard';
+import { TeacherLoginScreen } from './components/TeacherLoginScreen';
 import { LibraryScreen, DictationMaterial } from './components/LibraryScreen';
 import { LoginScreen } from './components/LoginScreen';
 import { saveRecord } from './utils/historyManager';
 import { registerStudent } from './utils/studentManager';
 import { createSuggestionTask, savePendingSuggestionTaskLocal, syncSuggestionTaskToSupabase } from './utils/suggestionTaskManager';
 import { upsertAssignmentSubmission } from './utils/assignmentSubmissionManager';
+import { supabase } from './lib/supabase';
 
 type AppMode = 'setup' | 'practice' | 'results' | 'history' | 'review' | 'teacher' | 'library' | 'login';
 const LATEST_RESULTS_KEY = 'latest_results_report_v1';
@@ -106,6 +109,40 @@ function App() {
     setStudentIdentity(null);
     navigateTo('login');
   };
+
+  // ── 教师 Auth（Supabase Auth）──────────────────────────────
+  const [teacherSession, setTeacherSession] = useState<Session | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  useEffect(() => {
+    // 初始化时读取已有 session（防止刷新页面后丢失）
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setTeacherSession(session);
+      setIsAuthLoading(false);
+    });
+
+    // 监听 auth 状态变化（登录/登出 自动更新）
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setTeacherSession(session);
+      setIsAuthLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // 从 JWT user_metadata 派生教师信息（传给 Header 等组件）
+  const teacherInfo = teacherSession ? {
+    email: teacherSession.user.email || '',
+    name: (teacherSession.user.user_metadata?.name as string) || teacherSession.user.email || '',
+    isSuperAdmin: teacherSession.user.user_metadata?.role === 'super_admin',
+  } : null;
+
+  const handleTeacherLogout = async () => {
+    await supabase.auth.signOut();
+    // onAuthStateChange 会自动将 teacherSession 置为 null
+    navigateTo('setup');
+  };
+  // ─────────────────────────────────────────────────────────
 
   const [studentMetadata, setStudentMetadata] = useState<{
     studentName: string;
@@ -261,6 +298,9 @@ function App() {
         studentIdentity={studentIdentity}
         onLogin={() => navigateTo('login')}
         onLogout={handleLogout}
+        teacherInfo={teacherInfo}
+        onTeacherLogin={() => navigateTo('teacher')}
+        onTeacherLogout={handleTeacherLogout}
       />
 
       <main className="py-8 relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -330,7 +370,22 @@ function App() {
           )}
 
           {mode === 'teacher' && (
-            <TeacherDashboard onBack={handleRestart} />
+            isAuthLoading ? (
+              <div className="flex items-center justify-center h-64">
+                <div className="flex flex-col items-center gap-3 text-slate-400">
+                  <span className="inline-block w-8 h-8 border-2 border-slate-200 border-t-slate-500 rounded-full animate-spin" />
+                  <span className="text-sm">验证身份中…</span>
+                </div>
+              </div>
+            ) : teacherSession ? (
+              <TeacherDashboard
+              onBack={handleRestart}
+              isSuperAdmin={teacherInfo?.isSuperAdmin ?? false}
+              teacherUserId={teacherSession?.user.id ?? null}
+            />
+            ) : (
+              <TeacherLoginScreen onBack={handleRestart} />
+            )
           )}
 
           {mode === 'login' && (

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { normalizeClassName } from '../utils/classNameNormalizer';
+import ClassManagement from './ClassManagement';
 import {
   ArrowLeft,
   Users,
@@ -25,6 +26,7 @@ import {
   ThumbsUp,
   ThumbsDown,
   Zap,
+  Shield,
 } from 'lucide-react';
 import {
   generateTeachingSuggestion,
@@ -36,6 +38,13 @@ import {
   setLlmEnabled,
 } from '../utils/teachingSuggestionEngine';
 import type { TeachingInput, TeachingSuggestion } from '../utils/teachingSuggestionEngine';
+import {
+  listTeachers,
+  createTeacher,
+  deleteTeacher,
+  resetTeacherPassword,
+} from '../utils/teacherManager';
+import type { TeacherInfo } from '../utils/teacherManager';
 import {
   LineChart,
   Line,
@@ -54,6 +63,8 @@ import {
 
 interface TeacherDashboardProps {
   onBack: () => void;
+  isSuperAdmin?: boolean;
+  teacherUserId?: string | null;
 }
 
 interface StudentSummary {
@@ -114,7 +125,7 @@ interface SuggestionStats {
   unsupported: boolean;
 }
 
-export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) => {
+export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack, isSuperAdmin = false, teacherUserId = null }) => {
   const [students, setStudents] = useState<StudentSummary[]>([]);
   const [classes, setClasses] = useState<ClassStats[]>([]);
   const [dailyStats, setDailyStats] = useState<DailyStats[]>([]);
@@ -123,7 +134,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [error, setError] = useState<string | null>(null);
   const [selectedClass, setSelectedClass] = useState<string>('全部');
   const [expandedStudent, setExpandedStudent] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'classes' | 'trends' | 'suggestions' | 'assignments'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'classes' | 'trends' | 'suggestions' | 'assignments' | 'teachers' | 'classManagement'>('overview');
   const [suggestionStats, setSuggestionStats] = useState<SuggestionStats>({
     total: 0, done: 0, dismissed: 0, pending: 0,
     byClass: [], topStudents: [], loading: false, unsupported: false,
@@ -202,6 +213,120 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const [editingStudent, setEditingStudent] = useState<StudentSummary | null>(null);
   const [editClassName, setEditClassName] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // 修改密码
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccess, setPasswordSuccess] = useState(false);
+
+  // ── 教师管理（仅超管可见）────────────────────────────────────
+  const [teacherList, setTeacherList] = useState<TeacherInfo[]>([]);
+  const [teachersLoading, setTeachersLoading] = useState(false);
+  const [teachersError, setTeachersError] = useState('');
+
+  // 新增教师表单
+  const [newTeacherName, setNewTeacherName] = useState('');
+  const [newTeacherSchool, setNewTeacherSchool] = useState('');
+  const [newTeacherPassword, setNewTeacherPassword] = useState('');
+  const [addingTeacher, setAddingTeacher] = useState(false);
+  const [addTeacherError, setAddTeacherError] = useState('');
+  const [addTeacherSuccess, setAddTeacherSuccess] = useState('');
+
+  // 重置某教师密码
+  const [resetTargetId, setResetTargetId] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
+  const [resettingId, setResettingId] = useState('');
+  const [resetError, setResetError] = useState('');
+  const [resetSuccess, setResetSuccess] = useState('');
+
+  const fetchTeachers = async () => {
+    setTeachersLoading(true);
+    setTeachersError('');
+    try {
+      const list = await listTeachers();
+      setTeacherList(list);
+    } catch (e: unknown) {
+      setTeachersError(e instanceof Error ? e.message : '加载失败');
+    } finally {
+      setTeachersLoading(false);
+    }
+  };
+
+  const handleAddTeacher = async () => {
+    if (!newTeacherName.trim()) { setAddTeacherError('请输入教师姓名'); return; }
+    if (!newTeacherPassword.trim() || newTeacherPassword.length < 6) {
+      setAddTeacherError('密码至少 6 位'); return;
+    }
+    setAddingTeacher(true);
+    setAddTeacherError('');
+    setAddTeacherSuccess('');
+    try {
+      const t = await createTeacher(newTeacherName.trim(), newTeacherSchool.trim(), newTeacherPassword);
+      setTeacherList(prev => [...prev, t]);
+      setAddTeacherSuccess(`已成功创建教师账号：${t.name}`);
+      setNewTeacherName('');
+      setNewTeacherSchool('');
+      setNewTeacherPassword('');
+    } catch (e: unknown) {
+      setAddTeacherError(e instanceof Error ? e.message : '创建失败');
+    } finally {
+      setAddingTeacher(false);
+    }
+  };
+
+  const handleDeleteTeacher = async (id: string, name: string) => {
+    if (!window.confirm(`确认删除教师"${name}"的账号？此操作不可恢复。`)) return;
+    try {
+      await deleteTeacher(id);
+      setTeacherList(prev => prev.filter(t => t.id !== id));
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : '删除失败');
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetPassword.trim() || resetPassword.length < 6) {
+      setResetError('密码至少 6 位'); return;
+    }
+    setResettingId(resetTargetId);
+    setResetError('');
+    setResetSuccess('');
+    try {
+      await resetTeacherPassword(resetTargetId, resetPassword);
+      setResetSuccess('密码已重置');
+      setResetPassword('');
+      setTimeout(() => { setResetTargetId(''); setResetSuccess(''); }, 1500);
+    } catch (e: unknown) {
+      setResetError(e instanceof Error ? e.message : '重置失败');
+    } finally {
+      setResettingId('');
+    }
+  };
+  // ─────────────────────────────────────────────────────────
+
+  const handleChangePassword = async () => {
+    if (!newPassword) { setPasswordError('请输入新密码'); return; }
+    if (newPassword.length < 6) { setPasswordError('密码至少 6 位'); return; }
+    if (newPassword !== confirmPassword) { setPasswordError('两次输入的密码不一致'); return; }
+    setPasswordLoading(true);
+    setPasswordError('');
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    setPasswordLoading(false);
+    if (error) {
+      setPasswordError('修改失败，请重试');
+    } else {
+      setPasswordSuccess(true);
+      setNewPassword('');
+      setConfirmPassword('');
+      setTimeout(() => {
+        setShowPasswordModal(false);
+        setPasswordSuccess(false);
+      }, 1500);
+    }
+  };
   
   // 学生详细练习记录
   const [studentRecords, setStudentRecords] = useState<any[]>([]);
@@ -213,33 +338,147 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     setError(null);
 
     try {
-      // 获取学生摘要
+      // ── Step 1: 从 students 表取完整名单（普通教师按 teacher_id 过滤，超管取全部）──
+      let rosterQuery = supabase
+        .from('students')
+        .select('student_name, student_number, class_name, teacher_id');
+      if (!isSuperAdmin && teacherUserId) {
+        rosterQuery = rosterQuery.eq('teacher_id', teacherUserId);
+      }
+      const { data: rosterData } = await rosterQuery;
+      const roster = rosterData ?? [];
+
+      // 用于前端过滤的 key 集合（普通教师）
+      const allowedStudentKeys: Set<string> | null = (!isSuperAdmin && teacherUserId)
+        ? new Set(roster.map(s => `${s.student_name}|${s.class_name ?? ''}`))
+        : null;
+
+      // ── Step 2: 从 student_summary 视图获取有练习记录的统计（数据库 RLS + 前端双重过滤）──
       const { data: studentsData, error: studentsError } = await supabase
         .from('student_summary')
         .select('*')
         .order('avg_accuracy', { ascending: false });
 
       if (studentsError) throw studentsError;
-      setStudents(studentsData || []);
+      const filteredSummary = allowedStudentKeys
+        ? (studentsData || []).filter(s =>
+            allowedStudentKeys!.has(`${s.student_name}|${s.class_name ?? ''}`)
+          )
+        : (studentsData || []);
 
-      // 获取班级统计
+      // ── Step 3: 将名单与统计合并——名单中有、统计中没有的学生补零 ──
+      const summaryMap = new Map<string, StudentSummary>();
+      for (const s of filteredSummary) {
+        summaryMap.set(`${s.student_name}|${s.class_name ?? ''}`, s as StudentSummary);
+      }
+      const mergedStudents: StudentSummary[] = [...filteredSummary as StudentSummary[]];
+      const seenKeys = new Set(filteredSummary.map(s => `${s.student_name}|${s.class_name ?? ''}`));
+
+      for (const r of roster) {
+        const key = `${r.student_name}|${r.class_name ?? ''}`;
+        if (!seenKeys.has(key)) {
+          mergedStudents.push({
+            student_name: r.student_name,
+            student_number: r.student_number,
+            class_name: r.class_name ?? '',
+            total_practices: 0,
+            avg_accuracy: 0,
+            total_words_practiced: 0,
+            perfect_sentence_count: 0,
+            last_practice_date: '',
+            recent_practices: 0,
+            best_accuracy: 0,
+            worst_accuracy: 0,
+          });
+          seenKeys.add(key);
+        }
+      }
+      setStudents(mergedStudents);
+
+      // ── Step 4: 班级统计——合并 class_stats 视图 + 名单中没有练习记录的班级 ──
       const { data: classesData, error: classesError } = await supabase
         .from('class_stats')
         .select('*')
         .order('avg_accuracy', { ascending: false });
 
       if (classesError) throw classesError;
-      setClasses(classesData || []);
+      const allowedClasses = allowedStudentKeys
+        ? new Set(mergedStudents.map(s => s.class_name))
+        : null;
+      const filteredClasses = allowedClasses
+        ? (classesData || []).filter(c => allowedClasses.has(c.class_name))
+        : (classesData || []);
 
-      // 获取每日统计（最近7天）
-      const { data: dailyData, error: dailyError } = await supabase
-        .from('daily_stats')
-        .select('*')
-        .limit(7)
-        .order('practice_date', { ascending: true });
+      // 把名单里有但 class_stats 没有的班级补进来（零练习）
+      const classStatsMap = new Map<string, ClassStats>(
+        filteredClasses.map(c => [c.class_name, c as ClassStats])
+      );
+      const rosterClassMap = new Map<string, number>(); // class_name → student count
+      for (const s of mergedStudents) {
+        const cn = s.class_name ?? '';
+        if (cn) rosterClassMap.set(cn, (rosterClassMap.get(cn) ?? 0) + 1);
+      }
+      const mergedClasses: ClassStats[] = [...filteredClasses as ClassStats[]];
+      for (const [cn, count] of rosterClassMap.entries()) {
+        if (!classStatsMap.has(cn)) {
+          mergedClasses.push({
+            class_name: cn,
+            student_count: count,
+            total_practices: 0,
+            avg_accuracy: 0,
+            total_words_practiced: 0,
+          });
+        }
+      }
+      setClasses(mergedClasses);
 
-      if (dailyError) throw dailyError;
-      setDailyStats(dailyData || []);
+      // 获取每日统计
+      // 超管：使用 daily_stats 视图（全量）
+      // 普通教师：直接查 practice_records 按学生名单过滤后前端聚合，避免视图绕过 RLS
+      if (!isSuperAdmin && allowedStudentKeys !== null) {
+        const allowedNames = filteredStudents.map(s => s.student_name).filter(Boolean);
+        if (allowedNames.length === 0) {
+          setDailyStats([]);
+        } else {
+          const since = new Date();
+          since.setDate(since.getDate() - 30);
+          const { data: rawRecords } = await supabase
+            .from('practice_records')
+            .select('created_at, accuracy_rate, total_words, student_name')
+            .in('student_name', allowedNames)
+            .gte('created_at', since.toISOString());
+
+          // 前端聚合成 daily_stats 格式
+          const dayMap: Record<string, { count: number; students: Set<string>; accSum: number; words: number }> = {};
+          for (const r of rawRecords || []) {
+            const day = (r.created_at as string).slice(0, 10);
+            if (!dayMap[day]) dayMap[day] = { count: 0, students: new Set(), accSum: 0, words: 0 };
+            dayMap[day].count++;
+            dayMap[day].students.add(r.student_name);
+            dayMap[day].accSum += r.accuracy_rate ?? 0;
+            dayMap[day].words += r.total_words ?? 0;
+          }
+          const aggregated = Object.entries(dayMap)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .slice(-7)
+            .map(([day, v]) => ({
+              practice_date: day,
+              practice_count: v.count,
+              active_students: v.students.size,
+              avg_accuracy: v.count > 0 ? Math.round((v.accSum / v.count) * 10) / 10 : 0,
+              words_practiced: v.words,
+            }));
+          setDailyStats(aggregated);
+        }
+      } else {
+        const { data: dailyData, error: dailyError } = await supabase
+          .from('daily_stats')
+          .select('*')
+          .limit(7)
+          .order('practice_date', { ascending: true });
+        if (dailyError) throw dailyError;
+        setDailyStats(dailyData || []);
+      }
 
       // 获取难度统计
       const { data: difficultyData, error: difficultyError } = await supabase
@@ -429,6 +668,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
         material_title: assignMaterialTitle,
         due_date: assignDueDate || null,
         is_active: true,
+        teacher_id: teacherUserId ?? null,
       });
       if (error) {
         const msg = String(error.message || '').toLowerCase();
@@ -466,10 +706,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
   const loadActiveAssignments = async () => {
     setAssignmentsLoading(true);
     try {
-      const { data, error } = await supabase
+      // 普通教师只能查自己创建的作业（按 teacher_id 过滤）
+      let query = supabase
         .from('class_assignments')
         .select('*')
         .order('created_at', { ascending: false });
+
+      if (!isSuperAdmin && teacherUserId) {
+        query = query.eq('teacher_id', teacherUserId);
+      }
+
+      const { data, error } = await query;
       if (error) {
         const msg = String(error.message || '').toLowerCase();
         const code = String((error as any).code || '');
@@ -506,14 +753,23 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
     try {
       const since = new Date();
       since.setDate(since.getDate() - 14);
-      const { data: records } = await supabase
+      // 普通教师：额外限制只查自己学生的记录（RLS 已在数据库层过滤，此处作前端保险）
+      let q = supabase
         .from('practice_records')
-        .select('error_summary')
+        .select('error_summary, student_name')
         .eq('class_name', className)
         .gte('created_at', since.toISOString());
+      // 若 RLS 未生效，前端用学生名单再过滤
+      const allowedNames = !isSuperAdmin
+        ? students.map(s => s.student_name).filter(Boolean)
+        : null;
+      const { data: records } = await q;
+      const filteredRecords = allowedNames && allowedNames.length > 0
+        ? (records || []).filter((r: any) => allowedNames.includes(r.student_name))
+        : (records || []);
 
       const subtypeCounts: Record<string, number> = {};
-      (records || []).forEach((r: any) => {
+      filteredRecords.forEach((r: any) => {
         const bySubtype = r.error_summary?.by_subtype || {};
         Object.entries(bySubtype).forEach(([k, v]) => {
           subtypeCounts[k] = (subtypeCounts[k] || 0) + (Number(v) || 0);
@@ -528,7 +784,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
       setAssignClassWeakness({
         topSubtypes,
         loading: false,
-        hasData: (records || []).length > 0,
+        hasData: filteredRecords.length > 0,
       });
     } catch {
       setAssignClassWeakness({ topSubtypes: [], loading: false, hasData: false });
@@ -1032,6 +1288,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
             </div>
             <div className="flex items-center gap-3">
               <button
+                onClick={() => { setShowPasswordModal(true); setPasswordError(''); setPasswordSuccess(false); }}
+                className="flex items-center gap-2 px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors text-sm"
+                title="修改登录密码"
+              >
+                <Save className="w-4 h-4" />
+                修改密码
+              </button>
+              <button
                 onClick={fetchData}
                 className="flex items-center gap-2 px-4 py-2 text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
               >
@@ -1064,17 +1328,22 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
               { key: 'trends', label: '趋势', icon: TrendingUp },
               { key: 'assignments', label: '作业看板', icon: ClipboardList },
               { key: 'suggestions', label: '教学建议', icon: Lightbulb },
+              { key: 'classManagement', label: '班级管理', icon: Users },
+              ...(isSuperAdmin ? [{ key: 'teachers', label: '教师管理', icon: Shield }] : []),
             ].map(tab => (
               <button
                 key={tab.key}
                 onClick={() => {
-                  setActiveTab(tab.key as any);
+                  setActiveTab(tab.key as typeof activeTab);
                   if (tab.key === 'classes' && Object.keys(classErrorProfiles).length === 0 && !classErrorLoading) {
                     void loadClassErrorProfiles();
                   }
                   if (tab.key === 'assignments' && !allSubmissionsLoaded && !allSubmissionsLoading) {
                     const allIds = [...activeAssignments, ...assignmentHistory].map(a => a.id);
                     void loadAllSubmissions(allIds);
+                  }
+                  if (tab.key === 'teachers' && teacherList.length === 0) {
+                    void fetchTeachers();
                   }
                   if (tab.key === 'suggestions') {
                     const defaultClass = classes[0]?.class_name ?? '';
@@ -1565,10 +1834,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                       </div>
                       <div className="flex items-center gap-6">
                         <div className="text-right">
-                          <div className="text-2xl font-bold text-slate-900">
-                            {student.avg_accuracy}%
-                          </div>
-                          <div className="text-xs text-slate-500">平均正确率</div>
+                          {student.total_practices === 0 ? (
+                            <div>
+                              <div className="text-sm font-medium text-slate-400 bg-slate-100 rounded-full px-3 py-1">暂未练习</div>
+                            </div>
+                          ) : (
+                            <div>
+                              <div className="text-2xl font-bold text-slate-900">
+                                {student.avg_accuracy}%
+                              </div>
+                              <div className="text-xs text-slate-500">平均正确率</div>
+                            </div>
+                          )}
                         </div>
                         {expandedStudent === student.student_name ? (
                           <ChevronUp className="w-5 h-5 text-slate-400" />
@@ -1605,7 +1882,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                         <div>
                           <p className="text-xs text-slate-500 mb-1">最后练习</p>
                           <p className="text-sm font-medium text-slate-700">
-                            {new Date(student.last_practice_date).toLocaleDateString('zh-CN')}
+                            {student.last_practice_date
+                              ? new Date(student.last_practice_date).toLocaleDateString('zh-CN')
+                              : '—'}
                           </p>
                         </div>
                       </div>
@@ -1735,10 +2014,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-3xl font-bold text-blue-600">
-                      {classItem.avg_accuracy}%
-                    </div>
-                    <p className="text-xs text-slate-500">班级平均正确率</p>
+                    {classItem.total_practices === 0 ? (
+                      <div className="text-sm font-medium text-slate-400 bg-slate-100 rounded-full px-3 py-1">暂未练习</div>
+                    ) : (
+                      <>
+                        <div className="text-3xl font-bold text-blue-600">
+                          {classItem.avg_accuracy}%
+                        </div>
+                        <p className="text-xs text-slate-500">班级平均正确率</p>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -1758,7 +2043,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                   <div>
                     <p className="text-sm text-slate-500 mb-1">人均练习</p>
                     <p className="text-xl font-semibold text-slate-900">
-                      {Math.round(classItem.total_practices / classItem.student_count)}
+                      {classItem.student_count > 0
+                        ? Math.round(classItem.total_practices / classItem.student_count)
+                        : 0}
                     </p>
                   </div>
                 </div>
@@ -2901,6 +3188,199 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
         </div>
       )}
 
+      {/* ── 班级管理 Tab ──────────────────────────── */}
+      {activeTab === 'classManagement' && (
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <ClassManagement teacherUserId={teacherUserId} isSuperAdmin={isSuperAdmin} />
+        </div>
+      )}
+
+      {/* ── 教师管理 Tab（仅超管可见）──────────────────────────── */}
+      {activeTab === 'teachers' && isSuperAdmin && (
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+
+          {/* 新增教师 */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+            <h2 className="text-lg font-bold text-slate-900 mb-5 flex items-center gap-2">
+              <Users className="w-5 h-5 text-emerald-600" />
+              添加教师账号
+            </h2>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">姓名 *</label>
+                <input
+                  type="text"
+                  value={newTeacherName}
+                  onChange={e => { setNewTeacherName(e.target.value); setAddTeacherError(''); setAddTeacherSuccess(''); }}
+                  placeholder="教师姓名"
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">所在学校</label>
+                <input
+                  type="text"
+                  value={newTeacherSchool}
+                  onChange={e => setNewTeacherSchool(e.target.value)}
+                  placeholder="学校名称（选填）"
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">初始密码 *</label>
+                <input
+                  type="text"
+                  value={newTeacherPassword}
+                  onChange={e => { setNewTeacherPassword(e.target.value); setAddTeacherError(''); }}
+                  placeholder="至少 6 位"
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none text-sm"
+                />
+              </div>
+            </div>
+
+            {addTeacherError && (
+              <div className="mt-3 px-4 py-2.5 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600">{addTeacherError}</div>
+            )}
+            {addTeacherSuccess && (
+              <div className="mt-3 px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-sm text-emerald-700 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4" />{addTeacherSuccess}
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center gap-3">
+              <button
+                onClick={() => void handleAddTeacher()}
+                disabled={addingTeacher}
+                className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white text-sm font-semibold rounded-xl transition-colors"
+              >
+                {addingTeacher
+                  ? <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin inline-block" />
+                  : <Users className="w-4 h-4" />
+                }
+                {addingTeacher ? '创建中...' : '创建账号'}
+              </button>
+              <p className="text-xs text-slate-400">
+                登录方式：教师入口 → 输入姓名 + 密码
+              </p>
+            </div>
+          </div>
+
+          {/* 教师列表 */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <Award className="w-5 h-5 text-blue-600" />
+                当前教师账号
+                <span className="text-sm font-normal text-slate-400">（{teacherList.length} 个）</span>
+              </h2>
+              <button
+                onClick={() => void fetchTeachers()}
+                disabled={teachersLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+                刷新
+              </button>
+            </div>
+
+            {teachersLoading && (
+              <div className="flex items-center justify-center py-12 text-slate-400">
+                <span className="w-6 h-6 border-2 border-slate-200 border-t-slate-500 rounded-full animate-spin mr-3" />
+                加载中…
+              </div>
+            )}
+            {teachersError && (
+              <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-600">{teachersError}</div>
+            )}
+
+            {!teachersLoading && teacherList.length === 0 && !teachersError && (
+              <p className="text-center text-slate-400 py-12 text-sm">暂无教师账号</p>
+            )}
+
+            <div className="space-y-3">
+              {teacherList.map(t => (
+                <div key={t.id} className="flex items-center justify-between p-4 border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-white text-sm font-bold ${
+                      t.role === 'super_admin' ? 'bg-purple-600' : 'bg-emerald-600'
+                    }`}>
+                      {t.name.charAt(0)}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-900 text-sm">{t.name}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          t.role === 'super_admin'
+                            ? 'bg-purple-100 text-purple-700'
+                            : 'bg-emerald-100 text-emerald-700'
+                        }`}>
+                          {t.role === 'super_admin' ? '超级管理员' : '教师'}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        {t.school && <span>{t.school} · </span>}
+                        {t.last_sign_in_at
+                          ? `最后登录：${new Date(t.last_sign_in_at).toLocaleDateString('zh-CN')}`
+                          : '从未登录'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* 重置密码 */}
+                    {resetTargetId === t.id ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={resetPassword}
+                          onChange={e => { setResetPassword(e.target.value); setResetError(''); setResetSuccess(''); }}
+                          placeholder="新密码（≥6位）"
+                          className="w-32 px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs focus:border-emerald-500 outline-none"
+                        />
+                        {resetSuccess && <span className="text-xs text-emerald-600">{resetSuccess}</span>}
+                        {resetError && <span className="text-xs text-red-500">{resetError}</span>}
+                        <button
+                          onClick={() => void handleResetPassword()}
+                          disabled={resettingId === t.id}
+                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-lg transition-colors"
+                        >
+                          {resettingId === t.id ? '...' : '确认'}
+                        </button>
+                        <button
+                          onClick={() => { setResetTargetId(''); setResetPassword(''); setResetError(''); setResetSuccess(''); }}
+                          className="px-2.5 py-1.5 text-slate-500 hover:bg-slate-100 text-xs rounded-lg transition-colors"
+                        >
+                          取消
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => { setResetTargetId(t.id); setResetPassword(''); setResetError(''); setResetSuccess(''); }}
+                          className="flex items-center gap-1 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          重置密码
+                        </button>
+                        {t.role !== 'super_admin' && (
+                          <button
+                            onClick={() => void handleDeleteTeacher(t.id, t.name)}
+                            className="flex items-center gap-1 px-3 py-1.5 text-xs text-red-500 hover:bg-red-50 border border-red-200 rounded-lg transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            删除
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 编辑学生班级对话框 */}
       {/* ── 班级周报模态框 ─────────────────────────────────────────────────── */}
       {showReportModal && (
@@ -3161,6 +3641,83 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBack }) =>
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 修改密码弹窗 */}
+      {showPasswordModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-lg font-bold text-slate-900">修改密码</h3>
+              <button
+                onClick={() => setShowPasswordModal(false)}
+                className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5 text-slate-500" />
+              </button>
+            </div>
+
+            {passwordSuccess ? (
+              <div className="flex flex-col items-center gap-3 py-6">
+                <div className="w-14 h-14 bg-emerald-100 rounded-full flex items-center justify-center">
+                  <CheckCircle2 className="w-8 h-8 text-emerald-600" />
+                </div>
+                <p className="text-emerald-700 font-semibold">密码修改成功</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">新密码</label>
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={e => { setNewPassword(e.target.value); setPasswordError(''); }}
+                    placeholder="请输入新密码（至少 6 位）"
+                    autoFocus
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none transition-all text-slate-800 placeholder-slate-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">确认新密码</label>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={e => { setConfirmPassword(e.target.value); setPasswordError(''); }}
+                    placeholder="再次输入新密码"
+                    onKeyDown={e => e.key === 'Enter' && void handleChangePassword()}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 outline-none transition-all text-slate-800 placeholder-slate-400"
+                  />
+                </div>
+
+                {passwordError && (
+                  <div className="px-4 py-2.5 bg-red-50 border border-red-200 rounded-xl">
+                    <p className="text-sm text-red-600">{passwordError}</p>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-1">
+                  <button
+                    onClick={() => setShowPasswordModal(false)}
+                    className="flex-1 py-2.5 border border-slate-300 rounded-xl text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => void handleChangePassword()}
+                    disabled={passwordLoading}
+                    className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white rounded-xl text-sm font-semibold transition-colors flex items-center justify-center gap-2"
+                  >
+                    {passwordLoading
+                      ? <span className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                      : <Save className="w-4 h-4" />
+                    }
+                    {passwordLoading ? '保存中...' : '确认修改'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
