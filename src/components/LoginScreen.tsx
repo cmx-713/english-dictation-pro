@@ -158,8 +158,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onBack
               value={className}
               onChange={e => { setClassName(e.target.value); setErrors(p => ({ ...p, className: '' })); }}
               onKeyDown={handleKeyDown}
-              placeholder={loadingClasses ? '正在加载班级列表...' : '选择或输入班级名称'}
-              disabled={false}
+              placeholder={loadingClasses ? '正在加载...' : '输入班级名称关键字搜索'}
               className={`w-full px-4 py-3 rounded-xl border outline-none transition-all text-slate-800 placeholder-slate-400 pr-10 ${
                 errors.className
                   ? 'border-red-400 focus:ring-2 focus:ring-red-100'
@@ -176,11 +175,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onBack
             ))}
           </datalist>
           {errors.className && <p className="mt-1 text-xs text-red-500">{errors.className}</p>}
-          {!loadingClasses && classList.length > 0 && (
-            <p className="mt-1 text-xs text-slate-400">已加载 {classList.length} 个班级，可直接输入或从列表选择</p>
-          )}
-          {!loadingClasses && classList.length === 0 && (
-            <p className="mt-1 text-xs text-slate-400">请手动输入班级名称</p>
+          {!loadingClasses && (
+            <p className="mt-1 text-xs text-slate-400">
+              输入关键字可快速筛选，也可直接填写班级名称
+            </p>
           )}
         </div>
 
